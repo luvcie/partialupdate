@@ -612,6 +612,141 @@ function renderClientRuntime(
 		}
 	};
 
+	const processingInstructionText = (node) => {
+		if (node.nodeType === Node.COMMENT_NODE) {
+			return node.data.replace(/^\\?(start|end|marker)\\b/i, (match) => match.toLowerCase());
+		}
+
+		if (node.nodeType === Node.PROCESSING_INSTRUCTION_NODE) {
+			return "?" + node.target.toLowerCase() + (node.data ? " " + node.data : "");
+		}
+
+		return "";
+	};
+
+		const instructionNameMatches = (text, name) => {
+			const escaped = name.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, "\\\\$&");
+			return new RegExp("\\\\bname\\\\s*=\\\\s*([\\"'])?" + escaped + "\\\\1").test(text);
+		};
+
+		const activateScripts = (root) => {
+			const scripts = root.querySelectorAll ? root.querySelectorAll("script") : [];
+
+			for (const inertScript of scripts) {
+				const script = document.createElement("script");
+
+				for (const attribute of inertScript.attributes) {
+					script.setAttribute(attribute.name, attribute.value);
+				}
+
+				if (script.src) {
+					script.async = false;
+				}
+
+				script.text = inertScript.textContent || "";
+				inertScript.replaceWith(script);
+			}
+
+			return root;
+		};
+
+		const activeClone = (content) => {
+			return activateScripts(content.cloneNode(true));
+		};
+
+		const replaceMarker = (name, content) => {
+			const walker = document.createTreeWalker(
+				document.documentElement,
+			NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_PROCESSING_INSTRUCTION
+		);
+		let start = null;
+		let depth = 0;
+		let startDepth = 0;
+
+		while (walker.nextNode()) {
+			const node = walker.currentNode;
+			const text = processingInstructionText(node);
+
+			if (!text) {
+				continue;
+			}
+
+			if (text.toLowerCase().startsWith("?marker") && instructionNameMatches(text, name)) {
+				node.replaceWith(activeClone(content));
+				return true;
+			}
+
+			if (text.toLowerCase().startsWith("?start")) {
+				depth += 1;
+
+				if (!start && instructionNameMatches(text, name)) {
+					start = node;
+					startDepth = depth;
+				}
+				continue;
+			}
+
+			if (text.toLowerCase().startsWith("?end") && start) {
+				if (depth <= startDepth) {
+					const end = start.parentElement === node.parentElement ? node : null;
+					let next = start.nextSibling;
+
+					while (next) {
+						if (next === end) {
+							next.remove();
+							break;
+						}
+
+						const remove = next;
+						next = next.nextSibling;
+						remove.remove();
+					}
+
+					start.replaceWith(activeClone(content));
+					return true;
+				}
+
+				if (depth > 1) {
+					depth -= 1;
+				}
+			}
+		}
+
+		return false;
+	};
+
+		const appendRawHtml = (html) => {
+			if (typeof document.body.appendHTMLUnsafe === "function") {
+				document.body.appendHTMLUnsafe(html, { runScripts: true });
+			} else if (typeof document.body.appendHTML === "function") {
+				document.body.appendHTML(html);
+			} else {
+				const container = document.createElement("template");
+				container.innerHTML = html;
+				document.body.append(activeClone(container.content));
+			}
+		};
+
+	const applyHtmlUpdate = (html) => {
+		const container = document.createElement("template");
+		container.innerHTML = html;
+		const templates = Array.from(container.content.querySelectorAll("template[for]"));
+
+		for (const template of templates) {
+			const name = template.getAttribute("for");
+
+			if (name && replaceMarker(name, template.content)) {
+				template.remove();
+			}
+		}
+
+			if (container.content.textContent.trim() || container.content.children.length > 0) {
+				const wrapper = document.createElement("div");
+				wrapper.append(activeClone(container.content));
+				appendRawHtml(wrapper.innerHTML);
+			}
+		};
+
 	window.Subscription = Subscription;
 	window.partialupdates = {
 		clientId,
@@ -625,13 +760,7 @@ function renderClientRuntime(
 	window.partialupdates.subscribe(new Subscription(
 		(update) => update.path === "/body" && update.type === "html",
 		(update) => {
-			if (typeof document.body.appendHTMLUnsafe === "function") {
-				document.body.appendHTMLUnsafe(update.payload);
-			} else if (typeof document.body.appendHTML === "function") {
-				document.body.appendHTML(update.payload);
-			} else {
-				document.body.insertAdjacentHTML("beforeend", update.payload);
-			}
+			applyHtmlUpdate(update.payload);
 			requestAnimationFrame(() => {
 				document.documentElement.scrollTo({
 					top: document.documentElement.scrollHeight,

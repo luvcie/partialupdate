@@ -1,0 +1,26 @@
+<?marker name="style-layout-overrides">
+<?marker name="style-chat-overrides">
+<?marker name="style-chat-color-overrides">
+<?marker name="style-prompt-box-overrides">
+<?marker name="before-layout">
+
+<div class="layout">
+	<?marker name="before-chat">
+	<div class="chat">
+		<?marker name="append-message">
+	</div>
+	<?marker name="after-chat">
+    <?start name="prompt-box">
+        <div class="prompt">
+            <form method="post" action="CHAT_ID/prompt" target="hidden-submit-frame">
+                <input hidden name="clientId" value="CLIENT_ID" />
+                <div class="textarea-shell">
+                    <?start name="clear"><textarea name="prompt"></textarea><?end>
+                </div>
+                <button type="submit">Send</button>
+            </form>
+        </div>
+	<?end>
+</div>
+
+<iframe name="hidden-submit-frame" hidden></iframe>

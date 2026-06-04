@@ -1,0 +1,75 @@
+/* ------------------------------------------------------------------
+       1. Global Scheme Config & Custom Variables
+       ------------------------------------------------------------------ */
+:root {
+	/* Declaring support for both schemes enables light-dark() to function */
+	color-scheme: light dark;
+
+	/* Page backgrounds & main text colors */
+	--body-bg: light-dark(#f1f5f9, #0f172a);
+	--text-main: light-dark(#1e293b, #e2e8f0);
+
+	/* Card wrapper elements */
+	--card-bg: light-dark(#ffffff, #1e293b);
+	--card-border: light-dark(#e2e8f0, #334155);
+
+	/* Header & Footer elements */
+	--header-bg: light-dark(#f8fafc, #0f172a);
+	--text-muted: light-dark(#64748b, #94a3b8);
+
+	/* Agent Bubbles */
+	--agent-bg: light-dark(#f1f5f9, #334155);
+	--agent-border: light-dark(#e2e8f0, #475569);
+
+	/* Inputs */
+	--input-bg: light-dark(#ffffff, #1e293b);
+	--input-border: light-dark(#cbd5e1, #475569);
+	--input-placeholder: light-dark(#94a3b8, #64748b);
+	--input-focus-shadow: light-dark(rgba(59, 130, 246, 0.15), rgba(59, 130, 246, 0.3));
+
+	/* Scrollbar */
+	--scrollbar-track: light-dark(#f1f5f9, #0f172a);
+	--scrollbar-thumb: light-dark(#cbd5e1, #334155);
+}
+
+/* ------------------------------------------------------------------
+       2. Base Styling & Reset
+       ------------------------------------------------------------------ */
+* {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
+/* Custom Scrollbar for the Entire Page */
+html::-webkit-scrollbar {
+	width: 10px;
+}
+
+html::-webkit-scrollbar-track {
+	background: var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar-thumb {
+	background-color: var(--scrollbar-thumb);
+	border-radius: 10px;
+	border: 2px solid var(--scrollbar-track);
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+	background-color: var(--body-bg);
+	color: var(--text-main);
+	display: flex;
+	justify-content: center;
+	align-items: flex-start;
+	min-height: 100vh;
+	padding: 40px 20px;
+	transition:
+		background-color 0.3s ease,
+		color 0.3s ease;
+}

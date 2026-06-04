@@ -1,0 +1,18 @@
+{
+	"name": "partialupdate",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"dev:secure": "bash scripts/dev-secure.sh",
+		"dev:tunnel": "bash scripts/dev-secure.sh --tunnel",
+		"start": "wrangler dev",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"@types/node": "^25.9.1",
+		"typescript": "^5.5.2",
+		"wrangler": "^4.95.0"
+	}
+}

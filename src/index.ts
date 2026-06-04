@@ -51,13 +51,20 @@ type Update = {
 };
 
 type WebSocketAttachment = {
-  clientId: string;
-  chatId: string;
+	clientId: string;
+	chatId: string;
 };
 
+declare global {
+	interface Element {
+		appendHTML?(html: string): void;
+		appendHTMLUnsafe?(html: string): void;
+	}
+}
+
 const htmlHeaders = {
-  "Cache-Control": "no-store",
-  "Content-Type": "text/html; charset=utf-8",
+	"Cache-Control": "no-store",
+	"Content-Type": "text/html; charset=utf-8",
 };
 
 export class PartialUpdate extends DurableObject<AppEnv> {
@@ -566,6 +573,7 @@ function renderAppPage(options: {
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>${escapeHtml(options.title)}</title>
+		<script src="https://unpkg.com/html-setters-polyfill"></script>
 		<script src="https://unpkg.com/template-for-polyfill"></script>
 		<style>${pageStyles}</style>
 		<style>${appStyles}</style>
@@ -617,7 +625,13 @@ function renderClientRuntime(
 	window.partialupdates.subscribe(new Subscription(
 		(update) => update.path === "/body" && update.type === "html",
 		(update) => {
-			document.body.appendHTML(update.payload);
+			if (typeof document.body.appendHTMLUnsafe === "function") {
+				document.body.appendHTMLUnsafe(update.payload);
+			} else if (typeof document.body.appendHTML === "function") {
+				document.body.appendHTML(update.payload);
+			} else {
+				document.body.insertAdjacentHTML("beforeend", update.payload);
+			}
 			requestAnimationFrame(() => {
 				document.documentElement.scrollTo({
 					top: document.documentElement.scrollHeight,

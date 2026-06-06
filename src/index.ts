@@ -1491,10 +1491,7 @@ function injectServerReplacements(
 ): string {
   return value
     .replaceAll(CLIENT_ID_TOKEN, escapeAttribute(clientId))
-    .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId))
-    .replaceAll("INSERT_CLIENT_ID", escapeAttribute(clientId))
-    .replaceAll("CLIENT_ID", escapeAttribute(clientId))
-    .replaceAll("CHAT_ID", escapeAttribute(chatId));
+    .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId));
 }
 
 function fallbackUpdate(prompt: string, fallbackClientId: string): string {
@@ -1542,9 +1539,7 @@ function normalizeModelOutput(output: string, clientId: string): string {
 }
 
 function injectPageIds(html: string, chatId: string, clientId: string): string {
-  return html
-    .replaceAll("CHAT_ID", escapeAttribute(chatId))
-    .replaceAll("CLIENT_ID", escapeAttribute(clientId));
+  return injectServerReplacements(html, chatId, clientId);
 }
 
 function escapeRegExp(value: string): string {

@@ -1,5 +1,3 @@
-chatId: CHAT_ID
-
 escapeString: PpqUtcLGQdYN4oqc
 
 The escape string is special. It is used as a delimiter and an escape sequence prefixing strings to be replaced before being sent to the client.
@@ -162,6 +160,64 @@ Also for scripts place them in markers so they can be updated:
     }
   </script>
 <?end>
+
+So a body for Tic Tac Toe might be like this:
+
+<template for="/chat/append-message">
+  <div class="message message-user" data-client-id="0" id="msg-user-1">Lets have a game of Tic Tac Toe</div>
+  <div class="message message-agent" id="msg-agent-1">
+    <div id="ttt-app-1">
+      <h3>Tic Tac Toe</h3>
+      <?start name="app/ttt/1/style">
+        <style>
+          ...
+        </style>
+      <?end>
+      <?start name="app/ttt/1/html">
+        <?start name="app/ttt/1/html/status">
+          <div class="ttt-status">Your turn (X)</div>
+        <?end>
+
+        <form method="post" action="PpqUtcLGQdYN4oqc:CHAT_ID/form" target="hidden-submit-frame">
+          <input hidden name="clientId" value="PpqUtcLGQdYN4oqc:CLIENT_ID" />
+          <input hidden name="path" value="app/tictactoe/1/move" />
+          <div class="ttt-grid">
+            <?start name="app/ttt/1/html/cell-0">
+              <button type="submit" name="index" value="0" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-1">
+              <button type="submit" name="index" value="1" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-2">
+              <button type="submit" name="index" value="2" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-3">
+              <button type="submit" name="index" value="3" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-4">
+              <button type="submit" name="index" value="4" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-5">
+              <button type="submit" name="index" value="5" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-6">
+              <button type="submit" name="index" value="6" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-7">
+              <button type="submit" name="index" value="7" class="ttt-cell"></button>
+            <?end>
+            <?start name="app/ttt/1/html/cell-8">
+              <button type="submit" name="index" value="8" class="ttt-cell"></button>
+            <?end>
+          </div>
+        </form>
+      <?end>
+    </div>
+  </div>
+  <?marker name="/chat/append-message">
+</template>
+
+This allows us to replace each cell and the style without redrawing the whole board. Note: ttt/1 in this case 1 is the instance number. The player may want another game. In that case we have a second board on the screen that would be board 2 ttt/2. Use instances numbers on markers and form paths.
 
 Do the same for SVG. Also do for HTML if a message is more like and app consisting of HTML, CSS, JS. This allow a user to update a bubble rather than getting a lot list of similar responses.
 

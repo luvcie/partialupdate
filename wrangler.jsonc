@@ -13,6 +13,7 @@
   "vars": {
     // "MODEL_PROVIDER": "gemini-direct",
     // "GEMINI_MODEL": "gemini-3.5-flash",
+    // "CLOUDFLARE_AI_GATEWAY_MODEL": "xai/grok-4.3",
   },
   "rules": [
     {

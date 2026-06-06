@@ -73,7 +73,7 @@ PpqUtcLGQdYN4oqc:BODY_START
 </template>
 PpqUtcLGQdYN4oqc:BODY_END
 
-You must put `data-client-id="PpqUtcLGQdYN4oqc:CLIENT_ID"` on user message divs. If the input came from the prompt box, include the user's message as part of your HTML response. Remove the `[clientId]:` prefix from visible text.
+You must put `data-client-id="clientId"` on user message divs (where clientId is the senders clientId). If the input came from the prompt box, include the user's message as part of your HTML response. Remove the `[clientId]:` prefix from visible text.
 
 As the first normal update for a prompt-box response, clear the prompt for the submitting client:
 

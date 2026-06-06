@@ -1,6 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import appStyles from "./app.css";
 import appHtml from "./app.html";
+import {
+  renderDebugPage,
+  type DebugState,
+  type LlmMessage,
+  type LlmRole,
+} from "./debug";
 import { getPrompt } from "./getPrompt";
 import pageStyles from "./page.css";
 
@@ -17,7 +23,6 @@ type AppEnv = Env & {
 };
 
 type ChatRole = "user" | "assistant" | "form";
-type LlmRole = "system" | "user" | "assistant";
 type UpdateType = "html" | "json";
 type ClientMode = "include" | "exclude";
 
@@ -27,17 +32,6 @@ type ChatMessage = {
   clientId: string;
   content: string;
   createdAt: number;
-};
-
-type LlmMessage = {
-  role: LlmRole;
-  content: string;
-};
-
-type DebugState = {
-  messages: LlmMessage[];
-  objectId: string;
-  updatedAt: string;
 };
 
 type Update = {
@@ -835,95 +829,6 @@ function jsonForInlineScript(value: unknown): string {
 		.replace(/&/g, "\\u0026")
 		.replace(/\u2028/g, "\\u2028")
 		.replace(/\u2029/g, "\\u2029");
-}
-
-function renderDebugPage(url: URL, state: DebugState): Response {
-  const json = JSON.stringify(state, null, 2);
-  const chatHref = new URL(`/${state.objectId}`, url.origin).toString();
-  const clearAction = `/${state.objectId}/debug/clear`;
-
-  return new Response(
-    `<!DOCTYPE html>
-<html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>PartialUpdate Debug ${escapeHtml(state.objectId)}</title>
-		<style>
-			:root {
-				color-scheme: light dark;
-				font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-			}
-
-			body {
-				margin: 0;
-				padding: 24px;
-				background: light-dark(#f8fafc, #0f172a);
-				color: light-dark(#0f172a, #e2e8f0);
-			}
-
-			header {
-				display: flex;
-				align-items: center;
-				justify-content: space-between;
-				gap: 16px;
-				margin-bottom: 20px;
-			}
-
-			h1 {
-				font-size: 20px;
-				margin: 0;
-			}
-
-			.actions {
-				display: flex;
-				gap: 8px;
-				align-items: center;
-			}
-
-			a,
-			button {
-				border: 1px solid light-dark(#cbd5e1, #475569);
-				border-radius: 6px;
-				background: light-dark(#ffffff, #1e293b);
-				color: inherit;
-				cursor: pointer;
-				font: inherit;
-				padding: 8px 10px;
-				text-decoration: none;
-			}
-
-			button {
-				background: light-dark(#fee2e2, #7f1d1d);
-				border-color: light-dark(#fecaca, #991b1b);
-			}
-
-			pre {
-				white-space: pre-wrap;
-				word-break: break-word;
-				background: light-dark(#ffffff, #020617);
-				border: 1px solid light-dark(#e2e8f0, #334155);
-				border-radius: 8px;
-				margin: 0;
-				padding: 16px;
-			}
-		</style>
-	</head>
-	<body>
-		<header>
-			<h1>Debug: ${escapeHtml(state.objectId)}</h1>
-			<div class="actions">
-				<a href="${escapeAttribute(chatHref)}">Open chat</a>
-				<form method="post" action="${escapeAttribute(clearAction)}">
-					<button type="submit">Clear chat</button>
-				</form>
-			</div>
-		</header>
-		<pre>${escapeHtml(json)}</pre>
-	</body>
-</html>`,
-    { headers: htmlHeaders },
-  );
 }
 
 async function* streamModelResponse(

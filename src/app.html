@@ -1,21 +1,21 @@
-<?marker name="style-layout-overrides">
-<?marker name="style-chat-overrides">
-<?marker name="style-chat-color-overrides">
-<?marker name="style-prompt-box-overrides">
-<?marker name="before-layout">
+<?marker name="/app/styles/layout-overrides">
+<?marker name="/app/styles/chat-overrides">
+<?marker name="/app/styles/chat-color-overrides">
+<?marker name="/app/styles/prompt-box-overrides">
+<?marker name="/app/layout/before">
 
 <div class="layout">
-	<?marker name="before-chat">
+	<?marker name="/app/chat/before">
 	<div class="chat">
-		<?marker name="append-message">
+		<?marker name="/app/messages/append">
 	</div>
-	<?marker name="after-chat">
-    <?start name="prompt-box">
+	<?marker name="/app/chat/after">
+    <?start name="/app/prompt-box">
         <div class="prompt">
             <form method="post" action="CHAT_ID/prompt" target="hidden-submit-frame">
                 <input hidden name="clientId" value="CLIENT_ID" />
                 <div class="textarea-shell">
-                    <?start name="clear"><textarea name="prompt"></textarea><?end>
+                    <?start name="/app/prompt/clear"><textarea name="prompt"></textarea><?end>
                 </div>
                 <button type="submit">Send</button>
             </form>

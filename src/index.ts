@@ -1,8 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import appStyles from "./app.css";
 import appHtml from "./app.html";
+import { renderDebugPage, type DebugState, type LlmMessage } from "./debugView";
 import { getPrompt } from "./getPrompt";
 import pageStyles from "./page.css";
+import {
+  injectUpdateClientId,
+  parseAllUpdates,
+  shouldSendToClient,
+  UpdateStreamParser,
+  type Update,
+} from "./updateFormat";
 
 type AppEnv = Env & {
   AI?: Ai;
@@ -17,9 +25,6 @@ type AppEnv = Env & {
 };
 
 type ChatRole = "user" | "assistant" | "form";
-type LlmRole = "system" | "user" | "assistant";
-type UpdateType = "html" | "json";
-type ClientMode = "include" | "exclude";
 
 type ChatMessage = {
   id: number;
@@ -27,27 +32,6 @@ type ChatMessage = {
   clientId: string;
   content: string;
   createdAt: number;
-};
-
-type LlmMessage = {
-  role: LlmRole;
-  content: string;
-};
-
-type DebugState = {
-  messages: LlmMessage[];
-  objectId: string;
-  updatedAt: string;
-};
-
-type Update = {
-  clients: {
-    mode: ClientMode;
-    ids: string[];
-  };
-  type: UpdateType;
-  path: string;
-  payload: string;
 };
 
 type WebSocketAttachment = {
@@ -143,9 +127,9 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     await this.broadcast({
       clients: { mode: "exclude", ids: [] },
       path: "/body",
-      payload: `<template for="append-message">
-	<?start name="append-message">
-	<?marker name="append-message">
+      payload: `<template for="/app/messages/append">
+	<?start name="/app/messages/append">
+	<?marker name="/app/messages/append">
 </template>`,
       type: "html",
     });
@@ -327,7 +311,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     this.addLlmMessage("system", getPrompt(clientId, chatId));
   }
 
-  private addLlmMessage(role: LlmRole, content: string): void {
+  private addLlmMessage(role: LlmMessage["role"], content: string): void {
     const createdAt = Date.now();
 
     this.ctx.storage.sql.exec(
@@ -575,6 +559,7 @@ function renderAppPage(options: {
 		<title>${escapeHtml(options.title)}</title>
 		<script src="https://unpkg.com/html-setters-polyfill"></script>
 		<script src="https://unpkg.com/template-for-polyfill"></script>
+		<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 		<style>${pageStyles}</style>
 		<style>${appStyles}</style>
 	</head>
@@ -727,6 +712,207 @@ function renderClientRuntime(
 			}
 		};
 
+	const escapeRenderedHtml = (value) => String(value)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+
+	const escapeRenderedAttribute = escapeRenderedHtml;
+
+	const flattenRenderedChildren = (children) => children.flat(Infinity)
+		.filter((child) => child !== null && child !== undefined && child !== false);
+
+	const renderAttributes = (props) => {
+		let html = "";
+
+		for (const [rawName, rawValue] of Object.entries(props || {})) {
+			if (
+				rawName === "children" ||
+				rawName === "key" ||
+				rawName === "ref" ||
+				rawValue === null ||
+				rawValue === undefined ||
+				rawValue === false
+			) {
+				continue;
+			}
+
+			const name = rawName === "className" ? "class" : rawName;
+
+			if (rawValue === true) {
+				html += " " + name;
+				continue;
+			}
+
+			const value = typeof rawValue === "object" && name === "style"
+				? Object.entries(rawValue).map(([key, item]) => key.replace(/[A-Z]/g, (match) => "-" + match.toLowerCase()) + ":" + item).join(";")
+				: rawValue;
+			html += " " + name + "=\\"" + escapeRenderedAttribute(value) + "\\"";
+		}
+
+		return html;
+	};
+
+	const Fragment = Symbol("PartialUpdateFragment");
+
+	const h = (tag, props, ...children) => {
+		const renderedChildren = flattenRenderedChildren(children).join("");
+
+		if (tag === Fragment) {
+			return renderedChildren;
+		}
+
+		if (typeof tag === "function") {
+			return tag({ ...(props || {}), children });
+		}
+
+		return "<" + tag + renderAttributes(props) + ">" + renderedChildren + "</" + tag + ">";
+	};
+
+	const PI = (props) => {
+		const kind = String(props.kind || "").toLowerCase();
+		const attrs = renderAttributes(Object.fromEntries(
+			Object.entries(props).filter(([key]) => key !== "kind" && key !== "children")
+		));
+
+		return "<?" + kind + attrs + ">";
+	};
+
+	const RawText = (props) => {
+		const id = Number(props.id);
+		return renderJsxBody.rawTextBlocks[id] || "";
+	};
+
+	const findRawTextEnd = (source, start, tagName) => {
+		const closing = "</" + tagName + ">";
+		const lower = source.toLowerCase();
+		let quote = "";
+		let escaped = false;
+		let lineComment = false;
+		let blockComment = false;
+
+		for (let index = start; index < source.length; index++) {
+			const char = source[index];
+			const next = source[index + 1] || "";
+
+			if (!quote && !lineComment && !blockComment && lower.startsWith(closing, index)) {
+				return index + closing.length;
+			}
+
+			if (lineComment) {
+				if (char === "\\n") {
+					lineComment = false;
+				}
+				continue;
+			}
+
+			if (blockComment) {
+				if (char === "*" && next === "/") {
+					blockComment = false;
+					index += 1;
+				}
+				continue;
+			}
+
+			if (quote) {
+				if (escaped) {
+					escaped = false;
+				} else if (char === "\\\\") {
+					escaped = true;
+				} else if (char === quote) {
+					quote = "";
+				}
+				continue;
+			}
+
+			if (tagName === "script" && char === "/" && next === "/") {
+				lineComment = true;
+				index += 1;
+				continue;
+			}
+
+			if (tagName === "script" && char === "/" && next === "*") {
+				blockComment = true;
+				index += 1;
+				continue;
+			}
+
+			if (tagName === "script" && (char === "\\"" || char === "'" || char === "\`")) {
+				quote = char;
+			}
+		}
+
+		return -1;
+	};
+
+	const preserveRawTextBlocks = (source) => {
+		let output = "";
+		let index = 0;
+
+		while (index < source.length) {
+			const match = /^<(script|style)\\b[^>]*>/i.exec(source.slice(index));
+
+			if (!match) {
+				output += source[index];
+				index += 1;
+				continue;
+			}
+
+			const tagName = match[1].toLowerCase();
+			const end = findRawTextEnd(source, index + match[0].length, tagName);
+
+			if (end === -1) {
+				output += source[index];
+				index += 1;
+				continue;
+			}
+
+			const id = renderJsxBody.rawTextBlocks.push(source.slice(index, end)) - 1;
+			output += "<RawText id={" + id + "} />";
+			index = end;
+		}
+
+		return output;
+	};
+
+	const preprocessProcessingInstructions = (source) => source.replace(
+		/<\\?(start|end|marker)\\b([^>]*)>/gi,
+		(_match, kind, attrs) => "<PI kind=\\"" + kind.toLowerCase() + "\\"" + attrs + " />"
+	);
+
+	const renderJsxBody = (source, vars = {}) => {
+		if (!source || !source.includes("<")) {
+			return source || "";
+		}
+
+		if (!window.Babel) {
+			console.warn("Babel is not available; rendering raw partial update body");
+			return source;
+		}
+
+		renderJsxBody.rawTextBlocks = [];
+		const prepared = preprocessProcessingInstructions(preserveRawTextBlocks(source));
+		const expression = "const __partialUpdateResult = (() => (<>" + prepared + "</>))();";
+		const transformed = window.Babel.transform(expression, {
+			plugins: [["transform-react-jsx", { pragma: "h", pragmaFrag: "Fragment" }]]
+		}).code;
+		const scope = { ...vars, vars, chatId, clientId };
+		const names = Object.keys(scope);
+		const values = names.map((name) => scope[name]);
+
+		return Function(
+			"h",
+			"Fragment",
+			"PI",
+			"RawText",
+			...names,
+			transformed + "\\nreturn __partialUpdateResult;"
+		)(h, Fragment, PI, RawText, ...values);
+	};
+	renderJsxBody.rawTextBlocks = [];
+
 	const applyHtmlUpdate = (html) => {
 		const container = document.createElement("template");
 		container.innerHTML = html;
@@ -760,7 +946,7 @@ function renderClientRuntime(
 	window.partialupdates.subscribe(new Subscription(
 		(update) => update.path === "/body" && update.type === "html",
 		(update) => {
-			applyHtmlUpdate(update.payload);
+			applyHtmlUpdate(renderJsxBody(update.payload, update.vars));
 			requestAnimationFrame(() => {
 				document.documentElement.scrollTo({
 					top: document.documentElement.scrollHeight,
@@ -818,95 +1004,6 @@ function jsonForInlineScript(value: unknown): string {
 		.replace(/&/g, "\\u0026")
 		.replace(/\u2028/g, "\\u2028")
 		.replace(/\u2029/g, "\\u2029");
-}
-
-function renderDebugPage(url: URL, state: DebugState): Response {
-  const json = JSON.stringify(state, null, 2);
-  const chatHref = new URL(`/${state.objectId}`, url.origin).toString();
-  const clearAction = `/${state.objectId}/debug/clear`;
-
-  return new Response(
-    `<!DOCTYPE html>
-<html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>PartialUpdate Debug ${escapeHtml(state.objectId)}</title>
-		<style>
-			:root {
-				color-scheme: light dark;
-				font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-			}
-
-			body {
-				margin: 0;
-				padding: 24px;
-				background: light-dark(#f8fafc, #0f172a);
-				color: light-dark(#0f172a, #e2e8f0);
-			}
-
-			header {
-				display: flex;
-				align-items: center;
-				justify-content: space-between;
-				gap: 16px;
-				margin-bottom: 20px;
-			}
-
-			h1 {
-				font-size: 20px;
-				margin: 0;
-			}
-
-			.actions {
-				display: flex;
-				gap: 8px;
-				align-items: center;
-			}
-
-			a,
-			button {
-				border: 1px solid light-dark(#cbd5e1, #475569);
-				border-radius: 6px;
-				background: light-dark(#ffffff, #1e293b);
-				color: inherit;
-				cursor: pointer;
-				font: inherit;
-				padding: 8px 10px;
-				text-decoration: none;
-			}
-
-			button {
-				background: light-dark(#fee2e2, #7f1d1d);
-				border-color: light-dark(#fecaca, #991b1b);
-			}
-
-			pre {
-				white-space: pre-wrap;
-				word-break: break-word;
-				background: light-dark(#ffffff, #020617);
-				border: 1px solid light-dark(#e2e8f0, #334155);
-				border-radius: 8px;
-				margin: 0;
-				padding: 16px;
-			}
-		</style>
-	</head>
-	<body>
-		<header>
-			<h1>Debug: ${escapeHtml(state.objectId)}</h1>
-			<div class="actions">
-				<a href="${escapeAttribute(chatHref)}">Open chat</a>
-				<form method="post" action="${escapeAttribute(clearAction)}">
-					<button type="submit">Clear chat</button>
-				</form>
-			</div>
-		</header>
-		<pre>${escapeHtml(json)}</pre>
-	</body>
-</html>`,
-    { headers: htmlHeaders },
-  );
 }
 
 async function* streamModelResponse(
@@ -1175,198 +1272,17 @@ function extractTextFromPayload(payload: unknown): string {
   );
 }
 
-class UpdateStreamParser {
-  private buffer = "";
-  private readonly decoder = new TextDecoder();
-
-  push(chunk: string): Update[] {
-    this.buffer += chunk;
-    const updates: Update[] = [];
-
-    while (true) {
-      const parsed = this.parseNext(false);
-
-      if (!parsed) {
-        return updates;
-      }
-
-      updates.push(parsed);
-    }
-  }
-
-  finish(): Update[] {
-    const updates: Update[] = [];
-
-    while (this.buffer.trim()) {
-      const parsed = this.parseNext(true);
-
-      if (!parsed) {
-        break;
-      }
-
-      updates.push(parsed);
-    }
-
-    return updates;
-  }
-
-  private parseNext(final: boolean): Update | null {
-    this.buffer = this.buffer.trimStart();
-
-    if (!this.buffer) {
-      return null;
-    }
-
-    const end = findJsonObjectEnd(this.buffer);
-
-    if (end === -1) {
-      return final ? this.parseLineFallback() : null;
-    }
-
-    const candidate = this.buffer.slice(0, end + 1);
-    const parsed = coerceUpdate(parseJson(candidate));
-
-    if (!parsed) {
-      this.buffer = this.buffer.slice(end + 1);
-      return null;
-    }
-
-    this.buffer = this.buffer.slice(end + 1);
-    return parsed;
-  }
-
-  private parseLineFallback(): Update | null {
-    const lineEnd = this.buffer.indexOf("\n");
-    const raw = lineEnd === -1 ? this.buffer : this.buffer.slice(0, lineEnd);
-    this.buffer = lineEnd === -1 ? "" : this.buffer.slice(lineEnd + 1);
-    return coerceUpdate(
-      parseJson(this.decoder.decode(new TextEncoder().encode(raw))),
-    );
-  }
-}
-
-function parseAllUpdates(text: string): Update[] {
-  const parser = new UpdateStreamParser();
-  return [...parser.push(text), ...parser.finish()];
-}
-
-function findJsonObjectEnd(input: string): number {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = 0; index < input.length; index++) {
-    const char = input[index];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === "{") {
-      depth += 1;
-    } else if (char === "}") {
-      depth -= 1;
-
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-
-  return -1;
-}
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function coerceUpdate(value: unknown): Update | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const candidate = value as Partial<Update>;
-  const clients = candidate.clients;
-
-  if (!clients || typeof clients !== "object") {
-    return null;
-  }
-
-  const mode =
-    clients.mode === "include" || clients.mode === "exclude"
-      ? clients.mode
-      : null;
-  const ids = Array.isArray(clients.ids)
-    ? clients.ids.filter((id): id is string => typeof id === "string")
-    : null;
-  const type =
-    candidate.type === "html" || candidate.type === "json"
-      ? candidate.type
-      : null;
-
-  if (
-    !mode ||
-    !ids ||
-    !type ||
-    typeof candidate.path !== "string" ||
-    typeof candidate.payload !== "string"
-  ) {
-    return null;
-  }
-
-  return {
-    clients: { mode, ids },
-    path: candidate.path,
-    payload: candidate.payload,
-    type,
-  };
-}
-
-function shouldSendToClient(update: Update, clientId: string): boolean {
-  if (update.clients.mode === "include") {
-    return update.clients.ids.includes(clientId);
-  }
-
-  return !update.clients.ids.includes(clientId);
-}
-
-function injectUpdateClientId(update: Update, clientId: string): Update {
-  return {
-    ...update,
-    payload: update.payload.replaceAll(
-      "INSERT_CLIENT_ID",
-      escapeAttribute(clientId),
-    ),
-  };
-}
-
 function fallbackUpdate(prompt: string, fallbackClientId: string): string {
   const { clientId, text } = splitPrompt(prompt);
   const id = clientId || fallbackClientId;
   const update: Update = {
     clients: { mode: "exclude", ids: [] },
     path: "/body",
-    payload: `<template for="append-message">
-	<?start name="append-message">
+    payload: `<template for="/app/messages/append">
+	<?start name="/app/messages/append">
 		<div class="message message-user" data-client-id="${escapeAttribute(id)}">${escapeHtml(text)}</div>
 		<div class="message message-agent">I received your message, but the configured model provider did not return a stream. Check the Cloudflare Gateway, Workers AI, or Gemini direct settings.</div>
-	<?marker name="append-message">
+	<?marker name="/app/messages/append">
 </template>`,
     type: "html",
   };

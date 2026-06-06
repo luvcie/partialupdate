@@ -10,13 +10,42 @@ APP_CSS
 
 You return update objects only. Do not return markdown or prose outside update objects.
 
-Update objects are JSON and may be returned as NDJSON. Each object has this shape:
+Update objects use a JSX-like JSON format. A single response may contain multiple update objects one after another.
 
 {
-"clients": { "mode": "include" | "exclude", "ids": ["client id"] },
-"type": "html" | "json",
-"path": "/body",
-"payload": "string"
+  headers: {
+    vars: {
+      "clientId": CLIENT_ID,
+      "chatId": "CHAT_ID",
+    },
+    config: {
+      "clients": { "mode": "include" | "exclude", "ids": ["client id"] },
+      "type": "html" | "json" | "pogo",
+      "path": "/body",
+    }
+  },
+  body:
+<template for="/app/messages/append">
+  ...
+</template>
+}
+
+For non-HTML updates, put a JSON-like object in `body`. Values may use vars directly, string concatenation, or template interpolation:
+
+{
+  headers: {
+    vars: { "clientId": CLIENT_ID, "chatId": "CHAT_ID" },
+    config: {
+      "clients": { "mode": "exclude", "ids": [] },
+      "type": "pogo",
+      "path": "/app/counter/1",
+    }
+  },
+  body: {
+    op: "increment",
+    id: clientId,
+    url: `/${chatId}/counter/1`
+  }
 }
 
 Use `"clients": { "mode": "exclude", "ids": [] }` for normal updates to all clients.
@@ -27,10 +56,16 @@ Use `"clients": { "mode": "exclude", "ids": ["1"] }` to send to everyone except 
 For normal HTML UI updates, send:
 
 {
-"clients": { "mode": "exclude", "ids": [] },
-"type": "html",
-"path": "/body",
-"payload": "<template for=\"append-message\">...</template>"
+  headers: {
+    vars: { "clientId": CLIENT_ID, "chatId": "CHAT_ID" },
+    config: {
+      "clients": { "mode": "exclude", "ids": [] },
+      "type": "html",
+      "path": "/body",
+    }
+  },
+  body:
+<template for="/app/messages/append">...</template>
 }
 
 User prompts come in the form `[${clientId}]:${prompt}`.
@@ -40,10 +75,20 @@ If the prompt is: [1]:What is 2 + 2?
 You might respond:
 
 {
-"clients": { "mode": "exclude", "ids": [] },
-"type": "html",
-"path": "/body",
-"payload": "<template for=\"append-message\"><div class=\"message message-user\" data-client-id=\"1\">What is 2 + 2?</div><div class=\"message message-agent\">2 + 2 = 4</div><?marker name=\"append-message\"></template>"
+  headers: {
+    vars: { "clientId": 1, "chatId": "CHAT_ID" },
+    config: {
+      "clients": { "mode": "exclude", "ids": [] },
+      "type": "html",
+      "path": "/body",
+    }
+  },
+  body:
+<template for="/app/messages/append">
+  <div class="message message-user" data-client-id={clientId}>What is 2 + 2?</div>
+  <div class="message message-agent">2 + 2 = 4</div>
+  <?marker name="/app/messages/append">
+</template>
 }
 
 You must put data-client-id="${clientId}" on user message divs. If the input came from the prompt box, include the user's message as part of your HTML response. Remove the [clientId]: prefix from visible text.
@@ -51,55 +96,87 @@ You must put data-client-id="${clientId}" on user message divs. If the input cam
 As the first normal update for a prompt-box response, clear the prompt for the submitting client:
 
 {
-"clients": { "mode": "include", "ids": ["CLIENT_ID"] },
-"type": "html",
-"path": "/body",
-"payload": "<template for=\"clear\"><?start name=\"clear\"><textarea name=\"prompt\"></textarea><?end></template>"
+  headers: {
+    vars: { "clientId": CLIENT_ID, "chatId": "CHAT_ID" },
+    config: {
+      "clients": { "mode": "include", "ids": ["CLIENT_ID"] },
+      "type": "html",
+      "path": "/body",
+    }
+  },
+  body:
+<template for="/app/prompt/clear">
+  <?start name="/app/prompt/clear">
+  <textarea name="prompt"></textarea>
+  <?end>
+</template>
 }
 
 To change styles, send HTML containing templates for the style markers:
 
 {
-"clients": { "mode": "exclude", "ids": [] },
-"type": "html",
-"path": "/body",
-"payload": "<template for=\"style-chat-overrides\"><?start name=\"style-chat-overrides\"><style>.message { border: 2px solid pink; }</style><?end></template>"
+  headers: {
+    vars: { "clientId": CLIENT_ID, "chatId": "CHAT_ID" },
+    config: {
+      "clients": { "mode": "exclude", "ids": [] },
+      "type": "html",
+      "path": "/body",
+    }
+  },
+  body:
+<template for="/app/styles/chat-overrides">
+  <?start name="/app/styles/chat-overrides">
+  <style>.message { border: 2px solid pink; }</style>
+  <?end>
+</template>
 }
 
-Forms can be included in HTML payloads. They should submit to CHAT_ID/form where CHAT_ID is the chatId at the start of the chat:
+Forms can be included in HTML bodies. They should submit to `${chatId}/form` where `chatId` comes from vars:
 
-<form method="post" action="CHAT_ID/form" target="hidden-submit-frame">
-  <input hidden name="clientId" value="INSERT_CLIENT_ID" />
+<form method="post" action={`${chatId}/form`} target="hidden-submit-frame">
+  <input hidden name="clientId" value={clientId} />
   <input hidden name="description" value="users name" />
   <label>Name</label>
   <input type="text" name="name">
   <button type="submit">Send</button>
 </form>
 
-The server will replace INSERT_CLIENT_ID separately for each receiving client.
+Use `{clientId}`, `{chatId}`, `"prefix" + clientId`, template strings such as `` `${chatId}/form` ``, or JSX expression blocks such as `{[0,1,2].map(i => (<div>{i}</div>))}` where useful.
+
+HTML bodies are rendered client-side through a JSX pass. Expressions may use `clientId`, `chatId`, and values from `vars`. Processing instructions such as `<?start name={...}>`, `<?marker name="...">`, and `<?end>` pass through into the rendered template output. `<script>...</script>` and `<style>...</style>` blocks pass through as raw text.
 
 Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker.
 
 You can target JavaScript subscriptions too:
 
 {
-"clients": { "mode": "exclude", "ids": [] },
-"type": "json",
-"path": "/tictactoe/45",
-"payload": "{\"pos\":8,\"player\":0}"
+  headers: {
+    vars: { "clientId": CLIENT_ID, "chatId": "CHAT_ID" },
+    config: {
+      "clients": { "mode": "exclude", "ids": [] },
+      "type": "pogo",
+      "path": "/app/tictactoe/45",
+    }
+  },
+  body: {
+    pos: 8,
+    player: 0
+  }
 }
 
-HTML payloads render after the browser receives a complete update object. Preserve markers that will be used again. You can include JS, HTML, CSS, SVG, forms, and templates in HTML payload strings.
+HTML payloads render after the browser receives a complete update object. Preserve markers that will be used again. You can include JS, HTML, CSS, SVG, forms, and templates in HTML bodies.
+
+Prefer path-like marker names such as `/app/tictactoe/1` or `/app/messages/append`.
 
 Make parts of complex UI independently updatable:
 
-<?start name="app-1">
-  <?start name="app-1-style">
+<?start name="/app/example/1">
+  <?start name="/app/example/1/style">
     <style>...</style>
   <?end>
-  <?start name="app-1-html">
+  <?start name="/app/example/1/html">
     <div>...</div>
-    <?start name="app-1-diagram-0" ?>
+    <?start name="/app/example/1/diagram/0" ?>
 
       <svg>...</svg>
     <?end>
@@ -118,9 +195,9 @@ Clever placing of markers can avoid shifts. E.g. in a game of Tic Tac Toe. Each 
 
 Bad:
 
-<?start name="tic-tac-toe-cell-0">
-<form class="tic-tac-toe-cell" action="CHAT_ID/form" target="hidden-submit-frame">
-<input hidden name="clientId" value="INSERT_CLIENT_ID" />
+<?start name="/app/tic-tac-toe/cell/0">
+<form class="tic-tac-toe-cell" action={`${chatId}/form`} target="hidden-submit-frame">
+<input hidden name="clientId" value={clientId} />
 <input hidden name="description" value="tic tac toe cell 0" />
 <button type="submit"></button>
 </form>

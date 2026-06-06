@@ -7,59 +7,48 @@ This is a V2 migration of frontclaw however it has a slightly different architec
 
 ## Message format
 
-In frontclaw LLM responses where of the format <template><div>...</div></template> in the new system we the LLM will add a JSON wrapper:
+LLM responses use a JSX-like JSON format so HTML does not need to be escaped into a JSON string. A response can contain more than one update object, one after another.
 
-type Update = {
-clients: {
-mode: 'include' | 'exclude',
-ids: string[],
-};
-type: string;
-path: string;
-payload: string;
-};
-
-E.g. this would send the following template to all clients. On arrival at a client this would append the payload to the body of the page.
+This sends HTML to all clients:
 
 {
-clients: {mode: 'exclude', ids: []},
-path: '/body',
-type: 'html'
-payload: '<template>...</template>'
+  headers: {
+    vars: { clientId: 1, chatId: "fb14dkt" },
+    config: {
+      clients: { mode: "exclude", ids: [] },
+      path: "/body",
+      type: "html",
+    }
+  },
+  body:
+<template for="/app/messages/append">
+  <div class="message message-user" data-client-id={clientId}>What is 2 + 2?</div>
+  <div class="message message-agent">2 + 2 = 4</div>
+  <?marker name="/app/messages/append">
+</template>
 }
 
-This would send an update to an instance of Tic Tac Toe game running in JS:
+This sends an update to a JavaScript app subscription:
 
 {
-clients: {mode: 'exclude', ids: []},
-path: '/tictactoe/45',
-type: 'json'
-payload: '{"pos": 8, "player": 0}'
+  headers: {
+    vars: { clientId: 1, chatId: "fb14dkt" },
+    config: {
+      clients: { mode: "exclude", ids: [] },
+      path: "/app/tictactoe/45",
+      type: "pogo",
+    }
+  },
+  body: {
+    pos: 8,
+    player: 0,
+    source: `/${chatId}/move/${clientId}`
+  }
 }
 
-So in this version the LLM acts as a bit of an exchange. Most of the time it will forward messages to all clients but it can decide to send to one, a selection or no clients (E.g. secret random numbers):
+The LLM acts as a small exchange. Most updates go to all clients, but `clients` can include only selected clients, exclude selected clients, or include no clients for private state that should remain in LLM history.
 
-{
-clients: {mode: 'include', ids: []},
-path: '/secret',
-type: 'json'
-payload: '["paper", "stone", "paper", "scissors"]'
-}
-
-a response can have more than one JSON object as NDJSON:
-
-{
-clients: {mode: 'exclude', ids: []},
-path: '/body',
-type: 'html'
-payload: '<template>...</template>'
-}
-{
-clients: {mode: 'include', ids: []},
-path: '/secret',
-type: 'json'
-payload: '["paper", "stone", "paper", "scissors"]'
-}
+`vars` are available in HTML expressions and POGO bodies. The parser supports direct identifiers, string concatenation, and template interpolation. Marker names should use path-like names such as `/app/tictactoe/1`.
 
 ## Events
 

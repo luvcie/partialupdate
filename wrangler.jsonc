@@ -1,40 +1,46 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "partialupdate",
-	"main": "src/index.ts",
-	"compatibility_date": "2026-05-28",
-	"workers_dev": false,
-	"vars": {
-		// "MODEL_PROVIDER": "gemini-direct",
-		// "GEMINI_MODEL": "gemini-3.5-flash",
-	},
-	"rules": [
-		{
-			"type": "Text",
-			"globs": ["**/*.css", "**/*.html", "**/*.md"],
-			"fallthrough": true,
-		},
-	],
-	"migrations": [
-		{
-			"new_sqlite_classes": ["PartialUpdate"],
-			"tag": "v1",
-		},
-	],
-	"durable_objects": {
-		"bindings": [
-			{
-				"class_name": "PartialUpdate",
-				"name": "PARTIAL_UPDATE",
-			},
-		],
-	},
-	"ai": {
-		"binding": "AI",
-	},
-	"observability": {
-		"enabled": true,
-	},
-	"upload_source_maps": true,
-	"compatibility_flags": ["nodejs_compat"],
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "partialupdate",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-28",
+  "workers_dev": true,
+  //   "routes": [
+  //     {
+  //       "pattern": "v1.gotell.io",
+  //       "custom_domain": true,
+  //     },
+  //   ],
+  "vars": {
+    // "MODEL_PROVIDER": "gemini-direct",
+    // "GEMINI_MODEL": "gemini-3.5-flash",
+  },
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.css", "**/*.html", "**/*.md"],
+      "fallthrough": true,
+    },
+  ],
+  "migrations": [
+    {
+      "new_sqlite_classes": ["PartialUpdate"],
+      "tag": "v1",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "PartialUpdate",
+        "name": "PARTIAL_UPDATE",
+      },
+    ],
+  },
+  "ai": {
+    "binding": "AI",
+  },
+  "observability": {
+    "enabled": true,
+  },
+  "upload_source_maps": true,
+  "compatibility_flags": ["nodejs_compat"],
 }

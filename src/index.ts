@@ -592,9 +592,9 @@ function renderClientRuntime(
 ): string {
   return `
 (() => {
-	const chatId = ${JSON.stringify(chatId)};
-	const clientId = ${JSON.stringify(clientId)};
-	const history = ${JSON.stringify(history)};
+	const chatId = ${jsonForInlineScript(chatId)};
+	const clientId = ${jsonForInlineScript(clientId)};
+	const history = ${jsonForInlineScript(history)};
 	const subscriptions = new Set();
 
 	class Subscription {
@@ -809,6 +809,15 @@ function renderClientRuntime(
 
 	connect();
 })();`;
+}
+
+function jsonForInlineScript(value: unknown): string {
+	return JSON.stringify(value)
+		.replace(/</g, "\\u003c")
+		.replace(/>/g, "\\u003e")
+		.replace(/&/g, "\\u0026")
+		.replace(/\u2028/g, "\\u2028")
+		.replace(/\u2029/g, "\\u2029");
 }
 
 function renderDebugPage(url: URL, state: DebugState): Response {

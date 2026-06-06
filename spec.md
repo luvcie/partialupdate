@@ -1,69 +1,75 @@
-This is a V2 migration of frontclaw however it has a slightly different architecture.
+This is a V2 migration of frontclaw with a slightly different architecture.
 
 1. Rather than keeping the initial stream open we close it.
-2. Updates from the server happen via websockets from the DO. We will use Cloudflare hibernatable WS. We will also need to use their automatic ping/pong lets DO sleep while ping/pong continues.
-3. We continue to use the form submission to a hidden iframe.
-4. we also want to keep the debug view so we can see message history in the format the LLM uses
+2. Updates from the server happen via websockets from the DO. We use Cloudflare hibernatable WS and automatic ping/pong.
+3. We continue to use form submission to a hidden iframe.
+4. We keep the debug view so we can see message history in the format the LLM uses.
 
-## Message format
+## Message Format
 
-In frontclaw LLM responses where of the format <template><div>...</div></template> in the new system we the LLM will add a JSON wrapper:
+LLM responses use a delimiter-based protocol instead of NDJSON. This keeps HTML readable and avoids JSON string escaping mistakes.
 
-type Update = {
-clients: {
-mode: 'include' | 'exclude',
-ids: string[],
-};
-type: string;
-path: string;
-payload: string;
-};
+Multiple messages in one turn are split by this delimiter on its own line:
 
-E.g. this would send the following template to all clients. On arrival at a client this would append the payload to the body of the page.
+```text
+PpqUtcLGQdYN4oqc:SPLIT_MESSAGE
+```
 
+Each message has optional server props, optional client props, and a required body:
+
+```text
+PpqUtcLGQdYN4oqc:SERVER_PROPS_START
 {
-clients: {mode: 'exclude', ids: []},
-path: '/body',
-type: 'html'
-payload: '<template>...</template>'
+  clients: {
+    type: 'exclude',
+    ids: []
+  }
 }
-
-This would send an update to an instance of Tic Tac Toe game running in JS:
-
+PpqUtcLGQdYN4oqc:SERVER_PROPS_END
+PpqUtcLGQdYN4oqc:CLIENT_PROPS_START
 {
-clients: {mode: 'exclude', ids: []},
-path: '/tictactoe/45',
-type: 'json'
-payload: '{"pos": 8, "player": 0}'
+  path: '/body',
+  type: 'html'
 }
+PpqUtcLGQdYN4oqc:CLIENT_PROPS_END
+PpqUtcLGQdYN4oqc:BODY_START
+<template for="/chat/append-message">...</template>
+PpqUtcLGQdYN4oqc:BODY_END
+```
 
-So in this version the LLM acts as a bit of an exchange. Most of the time it will forward messages to all clients but it can decide to send to one, a selection or no clients (E.g. secret random numbers):
+If `SERVER_PROPS` is omitted, the message is sent to all clients.
+If `CLIENT_PROPS` is omitted, the browser receives `{ path: '/body', type: 'html' }`.
 
+`SERVER_PROPS` route messages and are not sent to the browser:
+
+```js
 {
-clients: {mode: 'include', ids: []},
-path: '/secret',
-type: 'json'
-payload: '["paper", "stone", "paper", "scissors"]'
+  clients: {
+    type: 'include' | 'exclude',
+    ids: ['client id']
+  }
 }
+```
 
-a response can have more than one JSON object as NDJSON:
+`CLIENT_PROPS` are visible to the browser:
 
+```js
 {
-clients: {mode: 'exclude', ids: []},
-path: '/body',
-type: 'html'
-payload: '<template>...</template>'
+  path: '/app/counter/1',
+  type: 'json'
 }
-{
-clients: {mode: 'include', ids: []},
-path: '/secret',
-type: 'json'
-payload: '["paper", "stone", "paper", "scissors"]'
-}
+```
+
+The body is sent as a string payload without JSON escaping. Server replacements are applied per receiving client:
+
+```text
+PpqUtcLGQdYN4oqc:CLIENT_ID
+PpqUtcLGQdYN4oqc:CHAT_ID
+```
 
 ## Events
 
-These events coming from the server should be available on the client to be subscribed to. E.g. this is how we will insert templates.
+Events coming from the server are available on the client to be subscribed to. Server props are stripped before dispatch.
 
 ```js
 const unsubscribe = window.partialupdates.subscribe(
@@ -76,10 +82,8 @@ const unsubscribe = window.partialupdates.subscribe(
 );
 ```
 
-We want this to work in all browser so we will use the polyfill:
-
-<script src="https://unpkg.com/template-for-polyfill"></script>
+Template markers use path-like names such as `/chat/append-message` and `/app/tictactoe/1`.
 
 ## Wrangler
 
-We need all pretty much the same structure in wrangler and package.json but with the name partialupdate. Reuse the same code for LLM selection, secrets and settings
+We need pretty much the same structure in wrangler and package.json but with the name partialupdate. Reuse the same code for LLM selection, secrets and settings.

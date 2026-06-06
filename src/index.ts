@@ -50,6 +50,12 @@ type Update = {
   payload: string;
 };
 
+type ClientUpdate = {
+  type: UpdateType;
+  path: string;
+  payload: string;
+};
+
 type WebSocketAttachment = {
 	clientId: string;
 	chatId: string;
@@ -66,6 +72,17 @@ const htmlHeaders = {
 	"Cache-Control": "no-store",
 	"Content-Type": "text/html; charset=utf-8",
 };
+
+const PROTOCOL_PREFIX = "PpqUtcLGQdYN4oqc";
+const SPLIT_MESSAGE = `${PROTOCOL_PREFIX}:SPLIT_MESSAGE`;
+const SERVER_PROPS_START = `${PROTOCOL_PREFIX}:SERVER_PROPS_START`;
+const SERVER_PROPS_END = `${PROTOCOL_PREFIX}:SERVER_PROPS_END`;
+const CLIENT_PROPS_START = `${PROTOCOL_PREFIX}:CLIENT_PROPS_START`;
+const CLIENT_PROPS_END = `${PROTOCOL_PREFIX}:CLIENT_PROPS_END`;
+const BODY_START = `${PROTOCOL_PREFIX}:BODY_START`;
+const BODY_END = `${PROTOCOL_PREFIX}:BODY_END`;
+const CLIENT_ID_TOKEN = `${PROTOCOL_PREFIX}:CLIENT_ID`;
+const CHAT_ID_TOKEN = `${PROTOCOL_PREFIX}:CHAT_ID`;
 
 export class PartialUpdate extends DurableObject<AppEnv> {
   constructor(ctx: DurableObjectState, env: AppEnv) {
@@ -123,7 +140,9 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     return renderAppPage({
       chatId,
       clientId,
-      history: updates.map((update) => injectUpdateClientId(update, clientId)),
+      history: updates.map((update) =>
+        toClientUpdate(update, chatId, clientId),
+      ),
       title: `PartialUpdate ${chatId}`,
     });
   }
@@ -143,9 +162,9 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     await this.broadcast({
       clients: { mode: "exclude", ids: [] },
       path: "/body",
-      payload: `<template for="append-message">
-	<?start name="append-message">
-	<?marker name="append-message">
+      payload: `<template for="/chat/append-message">
+	<?start name="/chat/append-message">
+	<?marker name="/chat/append-message">
 </template>`,
       type: "html",
     });
@@ -288,9 +307,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       }
 
       try {
-        socket.send(
-          JSON.stringify(injectUpdateClientId(update, attachment.clientId)),
-        );
+        socket.send(JSON.stringify(toClientUpdate(update, attachment.chatId, attachment.clientId)));
       } catch {
         staleSockets.push(socket);
       }
@@ -562,7 +579,7 @@ function formDataToRecord(form: FormData): Record<string, string> {
 function renderAppPage(options: {
   chatId: string;
   clientId: string;
-  history: Update[];
+  history: ClientUpdate[];
   title: string;
 }): string {
   const body = injectPageIds(appHtml, options.chatId, options.clientId);
@@ -588,7 +605,7 @@ function renderAppPage(options: {
 function renderClientRuntime(
   chatId: string,
   clientId: string,
-  history: Update[],
+  history: ClientUpdate[],
 ): string {
   return `
 (() => {
@@ -1177,7 +1194,6 @@ function extractTextFromPayload(payload: unknown): string {
 
 class UpdateStreamParser {
   private buffer = "";
-  private readonly decoder = new TextDecoder();
 
   push(chunk: string): Update[] {
     this.buffer += chunk;
@@ -1217,37 +1233,141 @@ class UpdateStreamParser {
       return null;
     }
 
+    const bodyEnd = findDelimiterLine(this.buffer, BODY_END);
+
+    if (bodyEnd === -1) {
+      if (!final || containsProtocolDelimiter(this.buffer)) {
+        return null;
+      }
+
+      return this.parseLegacyNext(final);
+    }
+
+    const endOfMessage = bodyEnd + BODY_END.length;
+    const candidate = this.buffer.slice(0, endOfMessage);
+    const parsed = parseDelimitedUpdate(candidate);
+
+    if (!parsed) {
+      this.buffer = this.buffer.slice(endOfMessage);
+      this.consumeSplitMessage();
+      return null;
+    }
+
+    this.buffer = this.buffer.slice(endOfMessage);
+    this.consumeSplitMessage();
+    return parsed;
+  }
+
+  private parseLegacyNext(final: boolean): Update | null {
     const end = findJsonObjectEnd(this.buffer);
 
     if (end === -1) {
-      return final ? this.parseLineFallback() : null;
+      if (final) {
+        this.buffer = "";
+      }
+
+      return null;
     }
 
     const candidate = this.buffer.slice(0, end + 1);
     const parsed = coerceUpdate(parseJson(candidate));
-
-    if (!parsed) {
-      this.buffer = this.buffer.slice(end + 1);
-      return null;
-    }
-
     this.buffer = this.buffer.slice(end + 1);
     return parsed;
   }
 
-  private parseLineFallback(): Update | null {
-    const lineEnd = this.buffer.indexOf("\n");
-    const raw = lineEnd === -1 ? this.buffer : this.buffer.slice(0, lineEnd);
-    this.buffer = lineEnd === -1 ? "" : this.buffer.slice(lineEnd + 1);
-    return coerceUpdate(
-      parseJson(this.decoder.decode(new TextEncoder().encode(raw))),
-    );
+  private consumeSplitMessage(): void {
+    this.buffer = this.buffer.trimStart();
+
+    if (this.buffer.startsWith(SPLIT_MESSAGE)) {
+      this.buffer = this.buffer.slice(SPLIT_MESSAGE.length);
+    }
   }
 }
 
 function parseAllUpdates(text: string): Update[] {
   const parser = new UpdateStreamParser();
   return [...parser.push(text), ...parser.finish()];
+}
+
+function parseDelimitedUpdate(text: string): Update | null {
+  const body = readDelimitedSection(text, BODY_START, BODY_END);
+
+  if (body === null) {
+    return null;
+  }
+
+  const serverProps = parseLooseObject(
+    readDelimitedSection(text, SERVER_PROPS_START, SERVER_PROPS_END),
+  );
+  const clientProps = parseLooseObject(
+    readDelimitedSection(text, CLIENT_PROPS_START, CLIENT_PROPS_END),
+  );
+
+  return coerceDelimitedUpdate(serverProps, clientProps, body);
+}
+
+function readDelimitedSection(
+  text: string,
+  startDelimiter: string,
+  endDelimiter: string,
+): string | null {
+  const start = findDelimiterLine(text, startDelimiter);
+
+  if (start === -1) {
+    return null;
+  }
+
+  const contentStart = lineEndIndex(text, start + startDelimiter.length);
+  const end = findDelimiterLine(text, endDelimiter, contentStart);
+
+  if (end === -1) {
+    return null;
+  }
+
+  return trimOneLeadingAndTrailingLineBreak(text.slice(contentStart, end));
+}
+
+function findDelimiterLine(
+  text: string,
+  delimiter: string,
+  fromIndex = 0,
+): number {
+  let index = text.indexOf(delimiter, fromIndex);
+
+  while (index !== -1) {
+    const before = index === 0 ? "" : text[index - 1];
+    const after = text[index + delimiter.length] || "";
+    const startsLine = index === 0 || before === "\n" || before === "\r";
+    const endsLine = after === "" || after === "\n" || after === "\r";
+
+    if (startsLine && endsLine) {
+      return index;
+    }
+
+    index = text.indexOf(delimiter, index + delimiter.length);
+  }
+
+  return -1;
+}
+
+function lineEndIndex(text: string, index: number): number {
+  if (text[index] === "\r" && text[index + 1] === "\n") {
+    return index + 2;
+  }
+
+  if (text[index] === "\n" || text[index] === "\r") {
+    return index + 1;
+  }
+
+  return index;
+}
+
+function trimOneLeadingAndTrailingLineBreak(value: string): string {
+  return value.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+}
+
+function containsProtocolDelimiter(text: string): boolean {
+  return text.includes(`${PROTOCOL_PREFIX}:`);
 }
 
 function findJsonObjectEnd(input: string): number {
@@ -1296,6 +1416,85 @@ function parseJson(value: string): unknown {
   }
 }
 
+function formatDelimitedUpdate(update: Update): string {
+  return [
+    SERVER_PROPS_START,
+    JSON.stringify(
+      {
+        clients: {
+          type: update.clients.mode,
+          ids: update.clients.ids,
+        },
+      },
+      null,
+      2,
+    ),
+    SERVER_PROPS_END,
+    CLIENT_PROPS_START,
+    JSON.stringify(
+      {
+        path: update.path,
+        type: update.type,
+      },
+      null,
+      2,
+    ),
+    CLIENT_PROPS_END,
+    BODY_START,
+    update.payload,
+    BODY_END,
+  ].join("\n");
+}
+
+function parseLooseObject(value: string | null): unknown {
+  if (value === null || !value.trim()) {
+    return undefined;
+  }
+
+  const parsed = parseJson(value);
+
+  if (parsed !== undefined) {
+    return parsed;
+  }
+
+  return parseJson(jsonishToJson(value));
+}
+
+function jsonishToJson(value: string): string {
+  return value
+    .replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
+    .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, content: string) =>
+      JSON.stringify(content.replace(/\\'/g, "'")),
+    )
+    .replace(/,\s*([}\]])/g, "$1");
+}
+
+function coerceDelimitedUpdate(
+  serverProps: unknown,
+  clientProps: unknown,
+  payload: string,
+): Update {
+  const server = serverProps && typeof serverProps === "object"
+    ? (serverProps as { clients?: unknown })
+    : {};
+  const client = clientProps && typeof clientProps === "object"
+    ? (clientProps as { path?: unknown; type?: unknown })
+    : {};
+  const clients = coerceClients(server.clients) ?? {
+    mode: "exclude" as const,
+    ids: [],
+  };
+  const type = client.type === "json" ? "json" : "html";
+  const path = typeof client.path === "string" ? client.path : "/body";
+
+  return {
+    clients,
+    path,
+    payload,
+    type,
+  };
+}
+
 function coerceUpdate(value: unknown): Update | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -1308,21 +1507,14 @@ function coerceUpdate(value: unknown): Update | null {
     return null;
   }
 
-  const mode =
-    clients.mode === "include" || clients.mode === "exclude"
-      ? clients.mode
-      : null;
-  const ids = Array.isArray(clients.ids)
-    ? clients.ids.filter((id): id is string => typeof id === "string")
-    : null;
+  const coercedClients = coerceClients(clients);
   const type =
     candidate.type === "html" || candidate.type === "json"
       ? candidate.type
       : null;
 
   if (
-    !mode ||
-    !ids ||
+    !coercedClients ||
     !type ||
     typeof candidate.path !== "string" ||
     typeof candidate.payload !== "string"
@@ -1331,10 +1523,39 @@ function coerceUpdate(value: unknown): Update | null {
   }
 
   return {
-    clients: { mode, ids },
+    clients: coercedClients,
     path: candidate.path,
     payload: candidate.payload,
     type,
+  };
+}
+
+function coerceClients(value: unknown): Update["clients"] | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const clients = value as {
+    ids?: unknown;
+    mode?: unknown;
+    type?: unknown;
+  };
+  const mode =
+    clients.type === "include" || clients.type === "exclude"
+      ? clients.type
+      : clients.mode === "include" || clients.mode === "exclude"
+        ? clients.mode
+        : null;
+
+  if (!mode || !Array.isArray(clients.ids)) {
+    return null;
+  }
+
+  return {
+    mode,
+    ids: clients.ids
+      .filter((id): id is string | number => typeof id === "string" || typeof id === "number")
+      .map(String),
   };
 }
 
@@ -1346,14 +1567,29 @@ function shouldSendToClient(update: Update, clientId: string): boolean {
   return !update.clients.ids.includes(clientId);
 }
 
-function injectUpdateClientId(update: Update, clientId: string): Update {
+function toClientUpdate(
+  update: Update,
+  chatId: string,
+  clientId: string,
+): ClientUpdate {
   return {
-    ...update,
-    payload: update.payload.replaceAll(
-      "INSERT_CLIENT_ID",
-      escapeAttribute(clientId),
-    ),
+    path: update.path,
+    payload: injectServerReplacements(update.payload, chatId, clientId),
+    type: update.type,
   };
+}
+
+function injectServerReplacements(
+  value: string,
+  chatId: string,
+  clientId: string,
+): string {
+  return value
+    .replaceAll(CLIENT_ID_TOKEN, escapeAttribute(clientId))
+    .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId))
+    .replaceAll("INSERT_CLIENT_ID", escapeAttribute(clientId))
+    .replaceAll("CLIENT_ID", escapeAttribute(clientId))
+    .replaceAll("CHAT_ID", escapeAttribute(chatId));
 }
 
 function fallbackUpdate(prompt: string, fallbackClientId: string): string {
@@ -1362,16 +1598,16 @@ function fallbackUpdate(prompt: string, fallbackClientId: string): string {
   const update: Update = {
     clients: { mode: "exclude", ids: [] },
     path: "/body",
-    payload: `<template for="append-message">
-	<?start name="append-message">
+    payload: `<template for="/chat/append-message">
+	<?start name="/chat/append-message">
 		<div class="message message-user" data-client-id="${escapeAttribute(id)}">${escapeHtml(text)}</div>
 		<div class="message message-agent">I received your message, but the configured model provider did not return a stream. Check the Cloudflare Gateway, Workers AI, or Gemini direct settings.</div>
-	<?marker name="append-message">
+	<?marker name="/chat/append-message">
 </template>`,
     type: "html",
   };
 
-  return JSON.stringify(update);
+  return formatDelimitedUpdate(update);
 }
 
 function splitPrompt(prompt: string): { clientId: string; text: string } {

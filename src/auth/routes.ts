@@ -124,7 +124,12 @@ async function startSocialSignIn(
     return new Response("Unable to start sign in", { status: 500 });
   }
 
-  const response = Response.redirect(data.url, 303);
+  const response = new Response(null, {
+    headers: {
+      Location: data.url,
+    },
+    status: 303,
+  });
   appendSetCookieHeaders(response.headers, authResponse.headers);
   return response;
 }

@@ -16,6 +16,7 @@ type AppEnv = Env & {
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_AI_GATEWAY_ID?: string;
   CLOUDFLARE_AI_GATEWAY_MODEL?: string;
+  CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS?: Record<string, unknown> | string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   MODEL_PROVIDER?: "cloudflare-gateway" | "workers-ai" | "gemini-direct";
@@ -868,11 +869,16 @@ async function* streamCloudflareGatewayResponse(
 ): AsyncIterable<string> {
   const gatewayId = env.CLOUDFLARE_AI_GATEWAY_ID || "default";
   const model = env.CLOUDFLARE_AI_GATEWAY_MODEL || "google/gemini-3-flash";
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID || "")}/ai/run`;
+  const modelSettings = parseGatewayModelSettings(
+    env.CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS,
+  );
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID || "")}/ai/v1/chat/completions`;
   const response = await fetch(url, {
     body: JSON.stringify({
-      input: cloudflareRunInputFromMessages(messages),
+      ...modelSettings,
+      messages: gatewayChatMessagesFromMessages(messages),
       model,
+      stream: true,
     }),
     headers: {
       Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN || ""}`,
@@ -1006,22 +1012,39 @@ function formatFormPrompt(fields: Record<string, string>): string {
   return `[form]:${new URLSearchParams(fields).toString()}`;
 }
 
-function cloudflareRunInputFromMessages(messages: LlmMessage[]): {
-  contents: Array<{ parts: Array<{ text: string }>; role: "model" | "user" }>;
-} {
-  return {
-    contents: messages.map((message) => ({
-      parts: [
-        {
-          text:
-            message.role === "system"
-              ? `system: ${message.content}`
-              : message.content,
-        },
-      ],
-      role: message.role === "assistant" ? "model" : "user",
-    })),
-  };
+function gatewayChatMessagesFromMessages(messages: LlmMessage[]): Array<{
+  content: string;
+  role: LlmRole;
+}> {
+  return messages.map((message) => ({
+    content: message.content,
+    role: message.role,
+  }));
+}
+
+function parseGatewayModelSettings(
+  value: Record<string, unknown> | string | undefined,
+): Record<string, unknown> {
+  if (!value) {
+    return {};
+  }
+
+  const parsed = typeof value === "string" ? parseJson(value) : value;
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("Ignoring invalid Cloudflare Gateway model settings", {
+      value,
+    });
+    return {};
+  }
+
+  const settings = { ...(parsed as Record<string, unknown>) };
+
+  for (const reservedKey of ["messages", "model", "stream"]) {
+    delete settings[reservedKey];
+  }
+
+  return settings;
 }
 
 async function* parseSseTextStream(

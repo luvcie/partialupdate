@@ -1,27 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import appStyles from "./app.css";
 import appHtml from "./app.html";
+import { handleAuthRoute, isAuthRoute } from "./auth/routes";
 import {
   renderDebugPage,
   type DebugState,
   type LlmMessage,
   type LlmRole,
 } from "./debug";
+import type { AppEnv } from "./env";
 import { getPrompt } from "./getPrompt";
 import pageStyles from "./page.css";
-
-type AppEnv = Env & {
-  AI?: Ai;
-  CLOUDFLARE_ACCOUNT_ID?: string;
-  CLOUDFLARE_API_TOKEN?: string;
-  CLOUDFLARE_AI_GATEWAY_ID?: string;
-  CLOUDFLARE_AI_GATEWAY_MODEL?: string;
-  CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS?: Record<string, unknown> | string;
-  GEMINI_API_KEY?: string;
-  GEMINI_MODEL?: string;
-  MODEL_PROVIDER?: "cloudflare-gateway" | "workers-ai" | "gemini-direct";
-  WORKERS_AI_MODEL?: string;
-};
 
 type ChatRole = "user" | "assistant" | "form";
 type UpdateType = "html" | "json";
@@ -414,6 +403,11 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
+
+    if (isAuthRoute(url.pathname)) {
+      return handleAuthRoute(request, env);
+    }
+
     const route = parseRoute(url.pathname);
 
     if (request.method === "GET" && route.kind === "home") {

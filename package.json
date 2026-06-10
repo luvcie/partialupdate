@@ -3,14 +3,22 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"deploy": "wrangler deploy",
+		"deploy:alpha": "wrangler deploy --env alpha",
+		"deploy:alpha:bootstrap": "wrangler deploy --env alpha --secrets-file .env.alpha",
+		"deploy:production": "wrangler deploy --env production",
+		"deploy:production:bootstrap": "wrangler deploy --env production --secrets-file .env.production",
 		"dev": "wrangler dev",
+		"dev:alpha": "wrangler dev --env alpha",
+		"dev:production": "wrangler dev --env production",
 		"dev:secure": "bash scripts/dev-secure.sh",
 		"dev:tunnel": "bash scripts/dev-secure.sh --tunnel",
-		"db:migrate:local": "wrangler d1 migrations apply partialupdate-auth --local",
-		"db:migrate:remote": "wrangler d1 migrations apply partialupdate-auth --remote",
+		"db:migrate:alpha": "wrangler d1 migrations apply partialupdate-auth-alpha --env alpha --remote",
+		"db:migrate:local": "wrangler d1 migrations apply partialupdate-auth-local --local",
+		"db:migrate:production": "wrangler d1 migrations apply partialupdate-auth-production --env production --remote",
 		"start": "wrangler dev",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"cf-typegen:alpha": "wrangler types --env alpha",
+		"cf-typegen:production": "wrangler types --env production"
 	},
 	"devDependencies": {
 		"@types/node": "^25.9.1",

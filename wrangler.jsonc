@@ -4,26 +4,30 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-28",
   "workers_dev": true,
-  //   "routes": [
-  //     {
-  //       "pattern": "v1.gotell.io",
-  //       "custom_domain": true,
-  //     },
-  //   ],
   "vars": {
     // "MODEL_PROVIDER": "gemini-direct",
     // "GEMINI_MODEL": "gemini-3.5-flash",
-    // Set with `wrangler secret put BETTER_AUTH_SECRET`.
-    // Set OAuth credentials with:
-    // `wrangler secret put GITHUB_CLIENT_ID`
-    // `wrangler secret put GITHUB_CLIENT_SECRET`
-    // `wrangler secret put GOOGLE_CLIENT_ID`
-    // `wrangler secret put GOOGLE_CLIENT_SECRET`
+    // Local secrets can go in .dev.vars.
+    // Deployed secrets should be set per environment:
+    // `wrangler secret put BETTER_AUTH_SECRET --env alpha`
+    // `wrangler secret put GITHUB_CLIENT_ID --env alpha`
+    // `wrangler secret put GITHUB_CLIENT_SECRET --env alpha`
+    // `wrangler secret put GOOGLE_CLIENT_ID --env alpha`
+    // `wrangler secret put GOOGLE_CLIENT_SECRET --env alpha`
     // "CLOUDFLARE_AI_GATEWAY_MODEL": "xai/grok-4.3",
     // "CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS": {
     //   "reasoning_effort": "high",
     // },
   },
+  //   "secrets": {
+  //     "required": [
+  //       "BETTER_AUTH_SECRET",
+  //       "GITHUB_CLIENT_ID",
+  //       "GITHUB_CLIENT_SECRET",
+  //       "GOOGLE_CLIENT_ID",
+  //       "GOOGLE_CLIENT_SECRET",
+  //     ],
+  //   },
   "rules": [
     {
       "type": "Text",
@@ -48,7 +52,7 @@
   "d1_databases": [
     {
       "binding": "AUTH_DB",
-      "database_name": "partialupdate-auth",
+      "database_name": "partialupdate-auth-local",
       "database_id": "local-partialupdate-auth",
     },
   ],
@@ -60,4 +64,84 @@
   },
   "upload_source_maps": true,
   "compatibility_flags": ["nodejs_compat"],
+  "env": {
+    "alpha": {
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "alpha.partialupdate.com",
+          "custom_domain": true,
+        },
+      ],
+      "vars": {
+        "BETTER_AUTH_URL": "https://alpha.partialupdate.com",
+      },
+      "secrets": {
+        "required": [
+          "BETTER_AUTH_SECRET",
+          "GITHUB_CLIENT_ID",
+          "GITHUB_CLIENT_SECRET",
+          "GOOGLE_CLIENT_ID",
+          "GOOGLE_CLIENT_SECRET",
+        ],
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "class_name": "PartialUpdate",
+            "name": "PARTIAL_UPDATE",
+          },
+        ],
+      },
+      "d1_databases": [
+        {
+          "binding": "AUTH_DB",
+          "database_name": "partialupdate-auth-alpha",
+          "database_id": "449e4425-3daa-4ae0-bb15-99c129f4b554",
+        },
+      ],
+      "ai": {
+        "binding": "AI",
+      },
+    },
+    "production": {
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "partialupdate.com",
+          "custom_domain": true,
+        },
+      ],
+      "vars": {
+        "BETTER_AUTH_URL": "https://partialupdate.com",
+      },
+      "secrets": {
+        "required": [
+          "BETTER_AUTH_SECRET",
+          "GITHUB_CLIENT_ID",
+          "GITHUB_CLIENT_SECRET",
+          "GOOGLE_CLIENT_ID",
+          "GOOGLE_CLIENT_SECRET",
+        ],
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "class_name": "PartialUpdate",
+            "name": "PARTIAL_UPDATE",
+          },
+        ],
+      },
+      "d1_databases": [
+        {
+          "binding": "AUTH_DB",
+          "database_name": "partialupdate-auth-production",
+          "database_id": "47ee602b-8286-4e12-b661-7fe666dfbe6d",
+        },
+      ],
+      "ai": {
+        "binding": "AI",
+      },
+    },
+  },
 }

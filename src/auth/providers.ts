@@ -1,8 +1,10 @@
 import type { AppEnv, AuthProviderName } from "../env";
 
-const DEFAULT_AUTH_PROVIDERS: AuthProviderName[] = ["GOOGLE", "GITHUB"];
-
 export function getEnabledAuthProviders(env: AppEnv): Set<AuthProviderName> {
+  return new Set(getEnabledAuthProviderList(env));
+}
+
+export function getEnabledAuthProviderList(env: AppEnv): AuthProviderName[] {
   const raw = env.AUTH_PROVIDERS as unknown;
 
   if (Array.isArray(raw)) {
@@ -27,7 +29,11 @@ export function getEnabledAuthProviders(env: AppEnv): Set<AuthProviderName> {
     }
   }
 
-  return new Set(DEFAULT_AUTH_PROVIDERS);
+  return [];
+}
+
+export function isAuthEnabled(env: AppEnv): boolean {
+  return getEnabledAuthProviderList(env).length > 0;
 }
 
 export function isAuthProviderEnabled(
@@ -42,8 +48,8 @@ export function shouldVerifyEmail(env: AppEnv): boolean {
   return raw === true || raw === "true";
 }
 
-function normalizeProviders(values: unknown[]): Set<AuthProviderName> {
-  const providers = new Set<AuthProviderName>();
+function normalizeProviders(values: unknown[]): AuthProviderName[] {
+  const providers: AuthProviderName[] = [];
 
   for (const value of values) {
     if (typeof value !== "string") {
@@ -57,7 +63,9 @@ function normalizeProviders(values: unknown[]): Set<AuthProviderName> {
       normalized === "GITHUB" ||
       normalized === "EMAIL_PASSWORD"
     ) {
-      providers.add(normalized);
+      if (!providers.includes(normalized)) {
+        providers.push(normalized);
+      }
     }
   }
 

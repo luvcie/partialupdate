@@ -6,6 +6,8 @@ import {
   type AuthProvider,
 } from "./server";
 import {
+  getEnabledAuthProviderList,
+  isAuthEnabled,
   isAuthProviderEnabled,
   shouldVerifyEmail,
 } from "./providers";
@@ -17,9 +19,13 @@ const authHtmlHeaders = {
 
 export function isAuthRoute(pathname: string): boolean {
   return (
+    pathname === "/sign-in" ||
+    pathname === "/sign-out" ||
     pathname === "/sign-up" ||
     pathname === "/private-hello" ||
     pathname.startsWith("/api/auth/") ||
+    pathname === "/auth/resend-verification" ||
+    pathname === "/auth/sign-out" ||
     pathname.startsWith("/auth/sign-in/") ||
     pathname.startsWith("/auth/sign-up/")
   );
@@ -30,6 +36,31 @@ export async function handleAuthRoute(
   env: AppEnv,
 ): Promise<Response> {
   const url = new URL(request.url);
+  const authEnabled = isAuthEnabled(env);
+
+  if (!authEnabled) {
+    if (request.method === "GET" && url.pathname === "/private-hello") {
+      return new Response("hello world", {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/plain; charset=utf-8",
+        },
+      });
+    }
+
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/sign-in" || url.pathname === "/sign-up")
+    ) {
+      return Response.redirect(new URL("/", url.origin).toString(), 302);
+    }
+
+    return new Response("Authentication is not enabled", { status: 404 });
+  }
+
+  if (!env.BETTER_AUTH_SECRET) {
+    return new Response("Authentication is not configured", { status: 503 });
+  }
 
   if (url.pathname.startsWith("/api/auth/")) {
     if (
@@ -45,8 +76,51 @@ export async function handleAuthRoute(
     return createAuth(request, env).handler(request);
   }
 
-  if (request.method === "GET" && url.pathname === "/sign-up") {
-    return new Response(renderSignUpPage(env), { headers: authHtmlHeaders });
+  if (
+    request.method === "GET" &&
+    (url.pathname === "/sign-in" || url.pathname === "/sign-up")
+  ) {
+    const session = await getAuthSession(request, env);
+
+    if (session?.user.emailVerified) {
+      return Response.redirect(
+        new URL("/private-hello", url.origin).toString(),
+        302,
+      );
+    }
+
+    if (session && shouldVerifyEmail(env)) {
+      return new Response(
+        renderCheckEmailPage(session.user.email, {
+          canResend: true,
+          resendEmail: session.user.email,
+        }),
+        { headers: authHtmlHeaders },
+      );
+    }
+
+    return new Response(renderAuthPage(env, authModeFromPath(url.pathname)), {
+      headers: authHtmlHeaders,
+    });
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/auth/resend-verification"
+  ) {
+    return resendVerificationEmail(request, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/auth/sign-out") {
+    return signOut(request, env, { redirect: false });
+  }
+
+  if (request.method === "GET" && url.pathname === "/sign-out") {
+    return signOut(request, env, { redirect: true });
+  }
+
+  if (request.method === "POST" && url.pathname === "/auth/sign-in/email") {
+    return startEmailPasswordSignIn(request, env);
   }
 
   if (request.method === "POST" && url.pathname.startsWith("/auth/sign-in/")) {
@@ -70,6 +144,16 @@ export async function handleAuthRoute(
       return Response.redirect(new URL("/sign-up", url.origin).toString(), 302);
     }
 
+    if (shouldVerifyEmail(env) && !session.user.emailVerified) {
+      return new Response(
+        renderCheckEmailPage(session.user.email, {
+          canResend: true,
+          resendEmail: session.user.email,
+        }),
+        { headers: authHtmlHeaders },
+      );
+    }
+
     return new Response("hello world", {
       headers: {
         "Cache-Control": "no-store",
@@ -79,6 +163,127 @@ export async function handleAuthRoute(
   }
 
   return new Response("Not found", { status: 404 });
+}
+
+async function signOut(
+  request: Request,
+  env: AppEnv,
+  options: { redirect: boolean },
+): Promise<Response> {
+  const url = new URL(request.url);
+  const authRequest = new Request(
+    new URL("/api/auth/sign-out", url.origin).toString(),
+    {
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: request.headers.get("Cookie") || "",
+        Origin: url.origin,
+      },
+      method: "POST",
+    },
+  );
+  const authResponse = await createAuth(request, env).handler(authRequest);
+  const response = options.redirect
+    ? new Response(null, {
+        headers: {
+          Location: new URL("/sign-in", url.origin).toString(),
+        },
+        status: 303,
+      })
+    : new Response(null, { status: authResponse.ok ? 204 : authResponse.status });
+  appendSetCookieHeaders(response.headers, authResponse.headers);
+  return response;
+}
+
+async function resendVerificationEmail(
+  request: Request,
+  env: AppEnv,
+): Promise<Response> {
+  if (!shouldVerifyEmail(env)) {
+    return Response.redirect(
+      new URL("/private-hello", request.url).toString(),
+      303,
+    );
+  }
+
+  const session = await getAuthSession(request, env);
+  const form = await request.formData();
+  const submittedEmail = getRequiredFormString(form, "email");
+  const email = session?.user.email || submittedEmail;
+
+  if (!email) {
+    return Response.redirect(new URL("/sign-up", request.url).toString(), 303);
+  }
+
+  if (session?.user.emailVerified) {
+    return Response.redirect(
+      new URL("/private-hello", request.url).toString(),
+      303,
+    );
+  }
+
+  const url = new URL(request.url);
+  const authRequest = new Request(
+    new URL("/api/auth/send-verification-email", url.origin).toString(),
+    {
+      body: JSON.stringify({
+        callbackURL: "/private-hello",
+        email,
+      }),
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: request.headers.get("Cookie") || "",
+        Origin: url.origin,
+      },
+      method: "POST",
+    },
+  );
+  const authResponse = await createAuth(request, env).handler(authRequest);
+
+  if (!authResponse.ok) {
+    const data = await readAuthResponseJson(authResponse);
+
+    return new Response(
+      renderCheckEmailPage(email, {
+        canResend: true,
+        resendEmail: email,
+        error: data.message || "Unable to resend verification email.",
+      }),
+      {
+        headers: authHtmlHeaders,
+        status: authResponse.status,
+      },
+    );
+  }
+
+  return new Response(
+    renderCheckEmailPage(email, {
+      canResend: true,
+      resendEmail: email,
+      resent: true,
+    }),
+    { headers: authHtmlHeaders },
+  );
+}
+
+async function readAuthResponseJson(
+  response: Response,
+): Promise<{ code?: string; message?: string }> {
+  try {
+    return (await response.json()) as { code?: string; message?: string };
+  } catch {
+    return {};
+  }
+}
+
+type AuthMode = "sign-in" | "sign-up";
+
+function authModeFromPath(pathname: string): AuthMode {
+  return pathname === "/sign-in" ? "sign-in" : "sign-up";
+}
+
+function getAuthModeFromForm(form: FormData): AuthMode {
+  return form.get("mode") === "sign-in" ? "sign-in" : "sign-up";
 }
 
 async function startEmailPasswordSignUp(
@@ -100,7 +305,12 @@ async function startEmailPasswordSignUp(
 
   if (!name || !email || !password || !privacyOk || !necessaryCookieConsent) {
     return new Response(
-      renderSignUpPage(env, "Please complete all required fields."),
+      renderAuthPage(
+        env,
+        "sign-up",
+        "Please complete all required fields.",
+        true,
+      ),
       {
         headers: authHtmlHeaders,
         status: 400,
@@ -134,7 +344,12 @@ async function startEmailPasswordSignUp(
 
   if (!authResponse.ok) {
     return new Response(
-      renderSignUpPage(env, data.message || "Unable to create account."),
+      renderAuthPage(
+        env,
+        "sign-up",
+        data.message || "Unable to create account.",
+        true,
+      ),
       {
         headers: authHtmlHeaders,
         status: authResponse.status,
@@ -143,9 +358,85 @@ async function startEmailPasswordSignUp(
   }
 
   if (shouldVerifyEmail(env)) {
-    return new Response(renderCheckEmailPage(email), {
-      headers: authHtmlHeaders,
+    return new Response(
+      renderCheckEmailPage(email, { canResend: true, resendEmail: email }),
+      {
+        headers: authHtmlHeaders,
+      },
+    );
+  }
+
+  const response = new Response(null, {
+    headers: {
+      Location: new URL("/private-hello", url.origin).toString(),
+    },
+    status: 303,
+  });
+  appendSetCookieHeaders(response.headers, authResponse.headers);
+  return response;
+}
+
+async function startEmailPasswordSignIn(
+  request: Request,
+  env: AppEnv,
+): Promise<Response> {
+  if (!isAuthProviderEnabled(env, "EMAIL_PASSWORD")) {
+    return new Response("Email and password sign in is not enabled", {
+      status: 404,
     });
+  }
+
+  const form = await request.formData();
+  const email = getRequiredFormString(form, "email");
+  const password = getRequiredFormString(form, "password");
+
+  if (!email || !password) {
+    return new Response(
+      renderAuthPage(env, "sign-in", "Please complete all required fields."),
+      {
+        headers: authHtmlHeaders,
+        status: 400,
+      },
+    );
+  }
+
+  const url = new URL(request.url);
+  const authRequest = new Request(
+    new URL("/api/auth/sign-in/email", url.origin).toString(),
+    {
+      body: JSON.stringify({
+        callbackURL: "/private-hello",
+        email,
+        password,
+      }),
+      headers: {
+        "Content-Type": "application/json",
+        Origin: url.origin,
+      },
+      method: "POST",
+    },
+  );
+  const authResponse = await createAuth(request, env).handler(authRequest);
+  const data = await readAuthResponseJson(authResponse);
+
+  if (!authResponse.ok) {
+    if (data.code === "EMAIL_NOT_VERIFIED") {
+      return new Response(
+        renderCheckEmailPage(email, {
+          canResend: true,
+          resendEmail: email,
+        }),
+        { headers: authHtmlHeaders },
+      );
+    }
+
+    return new Response(
+      renderAuthPage(env, "sign-in", data.message || "Unable to sign in."),
+      {
+        headers: authHtmlHeaders,
+        status: authResponse.status,
+      },
+    );
   }
 
   const response = new Response(null, {
@@ -164,19 +455,27 @@ async function startSocialSignIn(
   provider: AuthProvider,
 ): Promise<Response> {
   const form = await request.formData();
+  const mode = getAuthModeFromForm(form);
   const privacyOk = form.get("privacyOk") === "on";
   const necessaryCookieConsent = form.get("necessaryCookieConsent") === "on";
 
   if (!privacyOk || !necessaryCookieConsent) {
-    return new Response(renderSignUpPage(env, "Please confirm both consent options."), {
-      headers: authHtmlHeaders,
-      status: 400,
-    });
+    return new Response(
+      renderAuthPage(env, mode, "Please confirm both consent options."),
+      {
+        headers: authHtmlHeaders,
+        status: 400,
+      },
+    );
   }
 
   if (!hasProviderCredentials(env, provider)) {
     return new Response(
-      renderSignUpPage(env, `The ${provider} provider is not configured yet.`),
+      renderAuthPage(
+        env,
+        mode,
+        `The ${provider} provider is not configured yet.`,
+      ),
       {
         headers: authHtmlHeaders,
         status: 503,
@@ -193,7 +492,7 @@ async function startSocialSignIn(
         errorCallbackURL: "/sign-up",
         newUserCallbackURL: "/private-hello",
         provider,
-        requestSignUp: true,
+        requestSignUp: mode === "sign-up",
       }),
       headers: {
         "Content-Type": "application/json",
@@ -251,20 +550,71 @@ function appendSetCookieHeaders(target: Headers, source: Headers): void {
   }
 }
 
-function renderSignUpPage(env: AppEnv, error = ""): string {
-  const githubConfigured = isAuthProviderEnabled(env, "GITHUB");
-  const googleConfigured = isAuthProviderEnabled(env, "GOOGLE");
-  const emailPasswordConfigured = isAuthProviderEnabled(env, "EMAIL_PASSWORD");
+function renderAuthPage(
+  env: AppEnv,
+  mode: AuthMode,
+  error = "",
+  showEmailForm = false,
+): string {
+  const providers = getEnabledAuthProviderList(env);
+  const emailOnly =
+    providers.length === 1 && providers[0] === "EMAIL_PASSWORD";
+  const emailFormVisible = mode === "sign-up" && (showEmailForm || emailOnly);
   const githubEnabled = hasProviderCredentials(env, "github");
   const googleEnabled = hasProviderCredentials(env, "google");
-  const hasSocial = githubConfigured || googleConfigured;
+  const isSignIn = mode === "sign-in";
+  const providerControls = providers
+    .map((provider) => {
+      if (provider === "EMAIL_PASSWORD") {
+        if (isSignIn) {
+          return `<div class="fields">
+            <label class="field-label">
+              <span>Email</span>
+              <input type="email" name="email" autocomplete="email" required />
+            </label>
+            <label class="field-label">
+              <span>Password</span>
+              <input type="password" name="password" autocomplete="current-password" required />
+            </label>
+            <button type="submit" formaction="/auth/sign-in/email">Sign in with email</button>
+          </div>`;
+        }
+
+        return `<div class="email-sign-up">
+          <button type="button" id="email-sign-up-toggle" aria-controls="email-fields" aria-expanded="${emailFormVisible ? "true" : "false"}" ${emailFormVisible ? "hidden" : ""}>Sign up with email</button>
+          <div class="fields" id="email-fields" ${emailFormVisible ? "" : "hidden"}>
+            <label class="field-label">
+              <span>Name</span>
+              <input type="text" name="name" autocomplete="name" ${emailFormVisible ? "required" : "disabled"} />
+            </label>
+            <label class="field-label">
+              <span>Email</span>
+              <input type="email" name="email" autocomplete="email" ${emailFormVisible ? "required" : "disabled"} />
+            </label>
+            <label class="field-label">
+              <span>Password</span>
+              <input type="password" name="password" autocomplete="new-password" minlength="8" ${emailFormVisible ? "required" : "disabled"} />
+            </label>
+            <button type="submit" formaction="/auth/sign-up/email">Create account</button>
+          </div>
+        </div>`;
+      }
+
+      if (provider === "GITHUB") {
+        return `<button type="submit" formaction="/auth/sign-in/github" ${githubEnabled ? "" : "disabled"}>${isSignIn ? "Sign in" : "Sign up"} with GitHub</button>`;
+      }
+
+      return `<button type="submit" formaction="/auth/sign-in/google" ${googleEnabled ? "" : "disabled"}>${isSignIn ? "Sign in" : "Sign up"} with Google</button>`;
+    })
+    .join("");
+  const title = isSignIn ? "Sign in" : "Sign up";
 
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sign up - PartialUpdate</title>
+    <title>${title} - PartialUpdate</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -326,6 +676,10 @@ function renderSignUpPage(env: AppEnv, error = ""): string {
         opacity: 0.5;
       }
 
+      [hidden] {
+        display: none !important;
+      }
+
       input[type="email"],
       input[type="password"],
       input[type="text"] {
@@ -358,65 +712,98 @@ function renderSignUpPage(env: AppEnv, error = ""): string {
         gap: 6px;
       }
 
-      .section-title {
+      .email-sign-up {
+        display: grid;
+        gap: 10px;
+      }
+
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        margin: 0 0 16px;
+      }
+
+      .tab {
+        border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+        color: inherit;
+        padding: 10px 12px;
+        text-align: center;
+        text-decoration: none;
+      }
+
+      .tab:first-child {
+        border-radius: 6px 0 0 6px;
+      }
+
+      .tab:last-child {
+        border-left: 0;
+        border-radius: 0 6px 6px 0;
+      }
+
+      .tab[aria-current="page"] {
+        background: color-mix(in srgb, CanvasText 8%, transparent);
         font-weight: 700;
-        margin: 4px 0 0;
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>Sign up</h1>
-      <p>Create a PartialUpdate account.</p>
+      <h1>${title}</h1>
+      <p>${isSignIn ? "Sign in to your PartialUpdate account." : "Create a PartialUpdate account."}</p>
+      <nav class="tabs" aria-label="Authentication">
+        <a class="tab" href="/sign-in" ${isSignIn ? `aria-current="page"` : ""}>Sign in</a>
+        <a class="tab" href="/sign-up" ${isSignIn ? "" : `aria-current="page"`}>Sign up</a>
+      </nav>
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
       <form method="post">
+        <input type="hidden" name="mode" value="${mode}" />
         ${
-          emailPasswordConfigured
-            ? `<div class="fields">
-          <p class="section-title">Email</p>
-          <label class="field-label">
-            <span>Name</span>
-            <input type="text" name="name" autocomplete="name" />
-          </label>
-          <label class="field-label">
-            <span>Email</span>
-            <input type="email" name="email" autocomplete="email" />
-          </label>
-          <label class="field-label">
-            <span>Password</span>
-            <input type="password" name="password" autocomplete="new-password" minlength="8" />
-          </label>
-        </div>`
-            : ""
-        }
-        <label>
+          isSignIn
+            ? ""
+            : `<label>
           <input type="checkbox" name="privacyOk" required />
           <span>I agree to the privacy terms for storing my name and email.</span>
         </label>
         <label>
           <input type="checkbox" name="necessaryCookieConsent" required />
           <span>I consent to necessary authentication cookies.</span>
-        </label>
+        </label>`
+        }
         <div class="actions">
-          ${
-            emailPasswordConfigured
-              ? `<button type="submit" formaction="/auth/sign-up/email">Continue with email</button>`
-              : ""
-          }
-          ${
-            hasSocial
-              ? `${githubConfigured ? `<button type="submit" formaction="/auth/sign-in/github" ${githubEnabled ? "" : "disabled"}>Continue with GitHub</button>` : ""}
-          ${googleConfigured ? `<button type="submit" formaction="/auth/sign-in/google" ${googleEnabled ? "" : "disabled"}>Continue with Google</button>` : ""}`
-              : ""
-          }
+          ${providerControls}
         </div>
       </form>
+      <script>
+        const toggle = document.getElementById("email-sign-up-toggle");
+        const fields = document.getElementById("email-fields");
+
+        toggle?.addEventListener("click", () => {
+          fields.hidden = false;
+          toggle.setAttribute("aria-expanded", "true");
+          toggle.hidden = true;
+
+          for (const input of fields.querySelectorAll("input")) {
+            input.disabled = false;
+            input.required = true;
+          }
+
+          fields.querySelector("input")?.focus();
+        });
+      </script>
     </main>
   </body>
 </html>`;
 }
 
-function renderCheckEmailPage(email: string): string {
+function renderCheckEmailPage(
+  email: string,
+  options: {
+    canResend?: boolean;
+    error?: string;
+    resendEmail?: string;
+    resent?: boolean;
+  } = {},
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -454,12 +841,50 @@ function renderCheckEmailPage(email: string): string {
       p {
         line-height: 1.5;
       }
+
+      form {
+        margin: 24px 0 0;
+      }
+
+      button {
+        border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+        border-radius: 6px;
+        cursor: pointer;
+        font: inherit;
+        min-height: 44px;
+        padding: 0 14px;
+        width: 100%;
+      }
+
+      .error {
+        color: #b42318;
+        font-weight: 600;
+      }
+
+      .success {
+        color: #067647;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>Check your email</h1>
       <p>We sent a verification link to ${escapeHtml(email)}.</p>
+      ${
+        options.resent
+          ? `<p class="success">Verification email resent.</p>`
+          : ""
+      }
+      ${options.error ? `<p class="error">${escapeHtml(options.error)}</p>` : ""}
+      ${
+        options.canResend
+          ? `<form method="post" action="/auth/resend-verification">
+        ${options.resendEmail ? `<input type="hidden" name="email" value="${escapeHtml(options.resendEmail)}" />` : ""}
+        <button type="submit">Resend verification email</button>
+      </form>`
+          : ""
+      }
     </main>
   </body>
 </html>`;

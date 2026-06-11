@@ -3,6 +3,7 @@ set -euo pipefail
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/partialupdate-dev.XXXXXX")"
 env_file="$tmp_dir/.dev.vars"
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cleanup() {
 	rm -rf "$tmp_dir"
@@ -18,17 +19,33 @@ quote_dotenv() {
 	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-cat > "$env_file" <<EOF
-CLOUDFLARE_API_TOKEN="$(quote_dotenv "$(keychain_value CLOUDFLARE_API_TOKEN)")"
-CLOUDFLARE_AI_GATEWAY_ID="$(quote_dotenv "$(keychain_value CLOUDFLARE_AI_GATEWAY_ID)")"
-CLOUDFLARE_ACCOUNT_ID="$(quote_dotenv "$(keychain_value CLOUDFLARE_ACCOUNT_ID)")"
-GEMINI_API_KEY="$(quote_dotenv "$(keychain_value GEMINI_API_KEY)")"
-BETTER_AUTH_SECRET="$(quote_dotenv "$(keychain_value BETTER_AUTH_SECRET)")"
-GITHUB_CLIENT_ID="$(quote_dotenv "$(keychain_value GITHUB_CLIENT_ID)")"
-GITHUB_CLIENT_SECRET="$(quote_dotenv "$(keychain_value GITHUB_CLIENT_SECRET)")"
-GOOGLE_CLIENT_ID="$(quote_dotenv "$(keychain_value GOOGLE_CLIENT_ID)")"
-GOOGLE_CLIENT_SECRET="$(quote_dotenv "$(keychain_value GOOGLE_CLIENT_SECRET)")"
-EOF
+append_keychain_value() {
+	local key="$1"
+	local value
+
+	value="$(keychain_value "$key")"
+
+	if [[ -n "$value" ]]; then
+		printf '%s="%s"\n' "$key" "$(quote_dotenv "$value")" >> "$env_file"
+	fi
+}
+
+if [[ -f "$project_dir/.env" ]]; then
+	cp "$project_dir/.env" "$env_file"
+else
+	: > "$env_file"
+fi
+printf '\n' >> "$env_file"
+
+append_keychain_value CLOUDFLARE_API_TOKEN
+append_keychain_value CLOUDFLARE_AI_GATEWAY_ID
+append_keychain_value CLOUDFLARE_ACCOUNT_ID
+append_keychain_value GEMINI_API_KEY
+append_keychain_value BETTER_AUTH_SECRET
+append_keychain_value GITHUB_CLIENT_ID
+append_keychain_value GITHUB_CLIENT_SECRET
+append_keychain_value GOOGLE_CLIENT_ID
+append_keychain_value GOOGLE_CLIENT_SECRET
 
 chmod 600 "$env_file"
 

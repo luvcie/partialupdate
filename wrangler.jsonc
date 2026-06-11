@@ -5,29 +5,29 @@
   "compatibility_date": "2026-05-28",
   "workers_dev": true,
   "vars": {
+    "AUTH_PROVIDERS": ["GOOGLE", "GITHUB", "EMAIL_PASSWORD"],
+    "EMAIL_FROM": "noreply@indirectchat.com",
+    "EMAIL_FROM_NAME": "PartialUpdate",
+    "VERIFY_EMAIL": false,
     // "MODEL_PROVIDER": "gemini-direct",
     // "GEMINI_MODEL": "gemini-3.5-flash",
     // Local secrets can go in .dev.vars.
     // Deployed secrets should be set per environment:
     // `wrangler secret put BETTER_AUTH_SECRET --env alpha`
-    // `wrangler secret put GITHUB_CLIENT_ID --env alpha`
-    // `wrangler secret put GITHUB_CLIENT_SECRET --env alpha`
-    // `wrangler secret put GOOGLE_CLIENT_ID --env alpha`
-    // `wrangler secret put GOOGLE_CLIENT_SECRET --env alpha`
     // "CLOUDFLARE_AI_GATEWAY_MODEL": "xai/grok-4.3",
     // "CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS": {
     //   "reasoning_effort": "high",
     // },
   },
-  //   "secrets": {
-  //     "required": [
-  //       "BETTER_AUTH_SECRET",
-  //       "GITHUB_CLIENT_ID",
-  //       "GITHUB_CLIENT_SECRET",
-  //       "GOOGLE_CLIENT_ID",
-  //       "GOOGLE_CLIENT_SECRET",
-  //     ],
-  //   },
+  "secrets": {
+    "required": ["BETTER_AUTH_SECRET"],
+  },
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true,
+    },
+  ],
   "rules": [
     {
       "type": "Text",
@@ -69,22 +69,25 @@
       "workers_dev": false,
       "routes": [
         {
-          "pattern": "alpha.partialupdate.com",
+          "pattern": "alpha.indirectchat.com",
           "custom_domain": true,
         },
       ],
       "vars": {
+        "AUTH_PROVIDERS": ["GOOGLE", "GITHUB", "EMAIL_PASSWORD"],
         "BETTER_AUTH_URL": "https://alpha.partialupdate.com",
+        "EMAIL_FROM": "noreply@partialupdate.com",
+        "EMAIL_FROM_NAME": "PartialUpdate",
+        "VERIFY_EMAIL": false,
       },
       "secrets": {
-        "required": [
-          "BETTER_AUTH_SECRET",
-          "GITHUB_CLIENT_ID",
-          "GITHUB_CLIENT_SECRET",
-          "GOOGLE_CLIENT_ID",
-          "GOOGLE_CLIENT_SECRET",
-        ],
+        "required": ["BETTER_AUTH_SECRET"],
       },
+      "send_email": [
+        {
+          "name": "EMAIL",
+        },
+      ],
       "durable_objects": {
         "bindings": [
           {
@@ -108,22 +111,25 @@
       "workers_dev": false,
       "routes": [
         {
-          "pattern": "partialupdate.com",
+          "pattern": "indirectchat.com",
           "custom_domain": true,
         },
       ],
       "vars": {
-        "BETTER_AUTH_URL": "https://partialupdate.com",
+        "AUTH_PROVIDERS": ["GOOGLE", "GITHUB", "EMAIL_PASSWORD"],
+        "BETTER_AUTH_URL": "https://indirectchat.com",
+        "EMAIL_FROM": "noreply@indirectchat.com",
+        "EMAIL_FROM_NAME": "PartialUpdate",
+        "VERIFY_EMAIL": false,
       },
       "secrets": {
-        "required": [
-          "BETTER_AUTH_SECRET",
-          "GITHUB_CLIENT_ID",
-          "GITHUB_CLIENT_SECRET",
-          "GOOGLE_CLIENT_ID",
-          "GOOGLE_CLIENT_SECRET",
-        ],
+        "required": ["BETTER_AUTH_SECRET"],
       },
+      "send_email": [
+        {
+          "name": "EMAIL",
+        },
+      ],
       "durable_objects": {
         "bindings": [
           {

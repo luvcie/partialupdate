@@ -1,11 +1,43 @@
 import { betterAuth } from "better-auth";
 import type { AppEnv } from "../env";
+import { sendVerificationEmail } from "./email";
 import { upsertUserProfile } from "./profile";
+import {
+  isAuthProviderEnabled,
+  shouldVerifyEmail,
+} from "./providers";
 
 export type AuthProvider = "github" | "google";
 
 export function createAuth(request: Request, env: AppEnv) {
   const origin = new URL(request.url).origin;
+  const verifyEmail = shouldVerifyEmail(env);
+  const socialProviders: {
+    github?: {
+      clientId: string;
+      clientSecret: string;
+      scope: string[];
+    };
+    google?: {
+      clientId: string;
+      clientSecret: string;
+    };
+  } = {};
+
+  if (hasProviderCredentials(env, "github")) {
+    socialProviders.github = {
+      clientId: env.GITHUB_CLIENT_ID || "",
+      clientSecret: env.GITHUB_CLIENT_SECRET || "",
+      scope: ["user:email"],
+    };
+  }
+
+  if (hasProviderCredentials(env, "google")) {
+    socialProviders.google = {
+      clientId: env.GOOGLE_CLIENT_ID || "",
+      clientSecret: env.GOOGLE_CLIENT_SECRET || "",
+    };
+  }
 
   return betterAuth({
     appName: "PartialUpdate",
@@ -19,17 +51,27 @@ export function createAuth(request: Request, env: AppEnv) {
         trustedProviders: ["github", "google"],
       },
     },
-    socialProviders: {
-      github: {
-        clientId: env.GITHUB_CLIENT_ID || "",
-        clientSecret: env.GITHUB_CLIENT_SECRET || "",
-        scope: ["user:email"],
-      },
-      google: {
-        clientId: env.GOOGLE_CLIENT_ID || "",
-        clientSecret: env.GOOGLE_CLIENT_SECRET || "",
+    emailAndPassword: {
+      enabled: isAuthProviderEnabled(env, "EMAIL_PASSWORD"),
+      requireEmailVerification: verifyEmail,
+    },
+    emailVerification: {
+      autoSignInAfterVerification: true,
+      sendOnSignIn: verifyEmail,
+      sendOnSignUp: verifyEmail,
+      async sendVerificationEmail(data) {
+        if (!verifyEmail) {
+          return;
+        }
+
+        await sendVerificationEmail(env, {
+          email: data.user.email,
+          name: data.user.name,
+          url: data.url,
+        });
       },
     },
+    socialProviders,
     databaseHooks: {
       user: {
         create: {
@@ -80,8 +122,16 @@ export function hasProviderCredentials(
   provider: AuthProvider,
 ): boolean {
   if (provider === "github") {
-    return Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET);
+    return Boolean(
+      isAuthProviderEnabled(env, "GITHUB") &&
+        env.GITHUB_CLIENT_ID &&
+        env.GITHUB_CLIENT_SECRET,
+    );
   }
 
-  return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+  return Boolean(
+    isAuthProviderEnabled(env, "GOOGLE") &&
+      env.GOOGLE_CLIENT_ID &&
+      env.GOOGLE_CLIENT_SECRET,
+  );
 }

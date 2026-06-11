@@ -1,5 +1,6 @@
 export type AppEnv = Env & {
   AI?: Ai;
+  AUTH_PROVIDERS?: AuthProviderName[] | string;
   AUTH_DB: D1Database;
   BETTER_AUTH_SECRET?: string;
   BETTER_AUTH_URL?: string;
@@ -14,6 +15,12 @@ export type AppEnv = Env & {
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  EMAIL?: SendEmail;
+  EMAIL_FROM?: string;
+  EMAIL_FROM_NAME?: string;
   MODEL_PROVIDER?: "cloudflare-gateway" | "workers-ai" | "gemini-direct";
+  VERIFY_EMAIL?: boolean | string;
   WORKERS_AI_MODEL?: string;
 };
+
+export type AuthProviderName = "GOOGLE" | "GITHUB" | "EMAIL_PASSWORD";

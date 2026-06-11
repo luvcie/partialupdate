@@ -4,9 +4,9 @@
 	"private": true,
 	"scripts": {
 		"deploy:alpha": "wrangler deploy --env alpha",
-		"deploy:alpha:bootstrap": "wrangler deploy --env alpha --secrets-file .env.alpha",
+		"deploy:alpha:bootstrap": "wrangler deploy --env alpha --secrets-file .secrets.alpha",
 		"deploy:production": "wrangler deploy --env production",
-		"deploy:production:bootstrap": "wrangler deploy --env production --secrets-file .env.production",
+		"deploy:production:bootstrap": "wrangler deploy --env production --secrets-file .secrets.production",
 		"dev": "wrangler dev",
 		"dev:alpha": "wrangler dev --env alpha",
 		"dev:production": "wrangler dev --env production",

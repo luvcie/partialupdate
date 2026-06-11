@@ -62,6 +62,8 @@ type: 'html' | 'json'
 
 User prompts come in the form `[${clientId}]:${prompt}`.
 
+This chat's fork id is PpqUtcLGQdYN4oqc:FORK_ID. If a user asks for their fork id, tell them this value. If a user asks to open the fork, include a normal link to `/PpqUtcLGQdYN4oqc:FORK_ID`.
+
 If the prompt is `[1]:What is 2 + 2?`, you might respond:
 
 PpqUtcLGQdYN4oqc:BODY_START
@@ -90,6 +92,7 @@ Forms can be included in HTML bodies. The server replaces these tokens when send
 
 PpqUtcLGQdYN4oqc:CHAT_ID
 PpqUtcLGQdYN4oqc:CLIENT_ID
+PpqUtcLGQdYN4oqc:FORK_ID
 
 Example form:
 

@@ -24,6 +24,12 @@ type ChatMessage = {
   createdAt: number;
 };
 
+type ChatSnapshot = {
+  messages: ChatMessage[];
+  llmMessages: LlmMessage[];
+  llmUpdatedAt: string;
+};
+
 type Update = {
   clients: {
     mode: ClientMode;
@@ -67,6 +73,8 @@ const BODY_START = `${PROTOCOL_PREFIX}:BODY_START`;
 const BODY_END = `${PROTOCOL_PREFIX}:BODY_END`;
 const CLIENT_ID_TOKEN = `${PROTOCOL_PREFIX}:CLIENT_ID`;
 const CHAT_ID_TOKEN = `${PROTOCOL_PREFIX}:CHAT_ID`;
+const FORK_ID_TOKEN = `${PROTOCOL_PREFIX}:FORK_ID`;
+const FORK_INDEX_OBJECT = "__fork_index";
 
 export class PartialUpdate extends DurableObject<AppEnv> {
   constructor(ctx: DurableObjectState, env: AppEnv) {
@@ -116,6 +124,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
   }
 
   async getInitialPage(chatId: string, clientId: string): Promise<string> {
+    const forkId = await this.ensureForkId(chatId);
     this.ensureSystemMessage(clientId, chatId);
     const updates = this.readAssistantUpdates(1000).filter((update) =>
       shouldSendToClient(update, clientId),
@@ -124,10 +133,36 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     return renderAppPage({
       chatId,
       clientId,
+      forkId,
       history: updates.map((update) =>
-        toClientUpdate(update, chatId, clientId),
+        toClientUpdate(update, chatId, clientId, forkId),
       ),
       title: `PartialUpdate ${chatId}`,
+    });
+  }
+
+  async getForkId(chatId: string): Promise<string> {
+    return this.ensureForkId(chatId);
+  }
+
+  async getReadOnlyForkPage(
+    chatId: string,
+    forkId: string,
+    clientId: string,
+  ): Promise<string> {
+    const updates = this.readAssistantUpdates(1000).filter((update) =>
+      shouldSendToClient(update, clientId),
+    );
+
+    return renderAppPage({
+      chatId: forkId,
+      clientId,
+      connect: false,
+      forkId,
+      history: updates.map((update) =>
+        toClientUpdate(update, forkId, clientId, forkId),
+      ),
+      title: `PartialUpdate fork ${forkId}`,
     });
   }
 
@@ -152,6 +187,70 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 </template>`,
       type: "html",
     });
+  }
+
+  async lookupFork(forkId: string): Promise<string | undefined> {
+    const rows = this.ctx.storage.sql
+      .exec("SELECT chat_id FROM fork_index WHERE fork_id = ?", forkId)
+      .toArray() as Array<{ chat_id: string }>;
+    return rows[0]?.chat_id;
+  }
+
+  async lookupChatFork(chatId: string): Promise<string | undefined> {
+    const rows = this.ctx.storage.sql
+      .exec("SELECT fork_id FROM fork_index WHERE chat_id = ?", chatId)
+      .toArray() as Array<{ fork_id: string }>;
+    return rows[0]?.fork_id;
+  }
+
+  async registerFork(chatId: string, forkId: string): Promise<boolean> {
+    const result = this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO fork_index (fork_id, chat_id, created_at) VALUES (?, ?, ?)",
+      forkId,
+      chatId,
+      Date.now(),
+    );
+    return result.rowsWritten > 0;
+  }
+
+  async snapshotForFork(): Promise<ChatSnapshot> {
+    return {
+      llmMessages: this.readLlmMessages(),
+      llmUpdatedAt: this.getLlmUpdatedAt(),
+      messages: this.readMessages(),
+    };
+  }
+
+  async cloneFromSnapshot(
+    chatId: string,
+    clientId: string,
+    snapshot: ChatSnapshot,
+  ): Promise<void> {
+    await this.ctx.storage.deleteAll();
+    this.ensureSchema();
+    this.setNextClientId(maxClientId(snapshot.messages) + 1);
+    const forkId = await this.ensureForkId(chatId);
+    this.addLlmMessage("system", getPrompt(clientId, chatId, forkId));
+
+    for (const message of snapshot.llmMessages) {
+      if (message.role === "system") {
+        continue;
+      }
+
+      this.addLlmMessage(message.role, message.content);
+    }
+
+    for (const message of snapshot.messages) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO messages (role, client_id, content, created_at) VALUES (?, ?, ?, ?)",
+        message.role,
+        message.clientId,
+        message.content,
+        message.createdAt,
+      );
+    }
+
+    this.setMetadata("llmUpdatedAt", snapshot.llmUpdatedAt);
   }
 
   async submitPrompt(
@@ -227,7 +326,19 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 				role TEXT NOT NULL,
 				content TEXT NOT NULL,
 				created_at INTEGER NOT NULL
-			)
+			);
+
+			CREATE TABLE IF NOT EXISTS fork_index (
+				fork_id TEXT NOT NULL,
+				chat_id TEXT NOT NULL,
+				created_at INTEGER NOT NULL
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS fork_index_fork_id_idx
+				ON fork_index (fork_id);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS fork_index_chat_id_idx
+				ON fork_index (chat_id)
 		`);
   }
 
@@ -236,6 +347,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     chatId: string,
     prompt: string,
   ): Promise<void> {
+    await this.ensureForkId(chatId);
     this.ensureSystemMessage(clientId, chatId);
     this.addLlmMessage(
       "user",
@@ -280,6 +392,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
   private async broadcast(update: Update): Promise<void> {
     const staleSockets: WebSocket[] = [];
+    const forkId = this.readForkId();
 
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment() as
@@ -291,7 +404,16 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       }
 
       try {
-        socket.send(JSON.stringify(toClientUpdate(update, attachment.chatId, attachment.clientId)));
+        socket.send(
+          JSON.stringify(
+            toClientUpdate(
+              update,
+              attachment.chatId,
+              attachment.clientId,
+              forkId,
+            ),
+          ),
+        );
       } catch {
         staleSockets.push(socket);
       }
@@ -325,7 +447,10 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       return;
     }
 
-    this.addLlmMessage("system", getPrompt(clientId, chatId));
+    this.addLlmMessage(
+      "system",
+      getPrompt(clientId, chatId, this.readForkId()),
+    );
   }
 
   private addLlmMessage(role: LlmRole, content: string): void {
@@ -348,6 +473,30 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 				ORDER BY id ASC`,
       )
       .toArray() as unknown as LlmMessage[];
+  }
+
+  private readMessages(): ChatMessage[] {
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT id, role, client_id, content, created_at
+				FROM messages
+				ORDER BY id ASC`,
+      )
+      .toArray() as Array<{
+        id: number;
+        role: ChatRole;
+        client_id: string;
+        content: string;
+        created_at: number;
+      }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      role: row.role,
+      clientId: row.client_id,
+      content: row.content,
+      createdAt: row.created_at,
+    }));
   }
 
   private readAssistantUpdates(limit = 100): Update[] {
@@ -376,6 +525,37 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
   private setNextClientId(value: number): void {
     this.setMetadata("nextClientId", String(value));
+  }
+
+  private readForkId(): string {
+    return this.getMetadata("forkId") ?? "";
+  }
+
+  private async ensureForkId(chatId: string): Promise<string> {
+    const existing = this.readForkId();
+
+    if (existing) {
+      return existing;
+    }
+
+    const index = this.env.PARTIAL_UPDATE.getByName(FORK_INDEX_OBJECT);
+    const indexed = await index.lookupChatFork(chatId);
+
+    if (indexed) {
+      this.setMetadata("forkId", indexed);
+      return indexed;
+    }
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const forkId = newForkId();
+
+      if (await index.registerFork(chatId, forkId)) {
+        this.setMetadata("forkId", forkId);
+        return forkId;
+      }
+    }
+
+    throw new Error("Unable to allocate fork id");
   }
 
   private getLlmUpdatedAt(): string {
@@ -418,11 +598,35 @@ export default {
     }
 
     if (request.method === "GET" && route.kind === "chat") {
+      const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
+
+      if (forkSourceChatId) {
+        const clientId = newForkClientId();
+        const stub = env.PARTIAL_UPDATE.getByName(forkSourceChatId);
+        return new Response(
+          await stub.getReadOnlyForkPage(
+            forkSourceChatId,
+            route.chatId,
+            clientId,
+          ),
+          {
+            headers: htmlHeaders,
+          },
+        );
+      }
+
       const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
       const clientId = await stub.nextClientId();
       return new Response(await stub.getInitialPage(route.chatId, clientId), {
         headers: htmlHeaders,
       });
+    }
+
+    if (request.method === "GET" && route.kind === "fork") {
+      const forkId = await env.PARTIAL_UPDATE.getByName(
+        route.chatId,
+      ).getForkId(route.chatId);
+      return Response.redirect(new URL(`/${forkId}`, url.origin).toString(), 302);
     }
 
     if (request.method === "GET" && route.kind === "socket") {
@@ -460,6 +664,23 @@ export default {
         return new Response(null, { status: 400 });
       }
 
+      const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
+
+      if (forkSourceChatId) {
+        const newChatId = await createForkedChat(env, {
+          clientId,
+          sourceChatId: forkSourceChatId,
+        });
+
+        await env.PARTIAL_UPDATE.getByName(newChatId).submitPrompt(
+          clientId,
+          prompt,
+          newChatId,
+        );
+
+        return renderParentRedirect(new URL(`/${newChatId}`, url.origin));
+      }
+
       await env.PARTIAL_UPDATE.getByName(route.chatId).submitPrompt(
         clientId,
         prompt,
@@ -472,6 +693,23 @@ export default {
       const form = await request.formData();
       const fields = formDataToRecord(form);
       const clientId = fields.clientId || "unknown";
+
+      const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
+
+      if (forkSourceChatId) {
+        const newChatId = await createForkedChat(env, {
+          clientId,
+          sourceChatId: forkSourceChatId,
+        });
+
+        await env.PARTIAL_UPDATE.getByName(newChatId).submitForm(
+          clientId,
+          fields,
+          newChatId,
+        );
+
+        return renderParentRedirect(new URL(`/${newChatId}`, url.origin));
+      }
 
       await env.PARTIAL_UPDATE.getByName(route.chatId).submitForm(
         clientId,
@@ -493,11 +731,50 @@ export default {
   },
 } satisfies ExportedHandler<AppEnv>;
 
+async function lookupForkSourceChatId(
+  env: AppEnv,
+  forkId: string,
+): Promise<string | undefined> {
+  if (!forkId.startsWith("fork-")) {
+    return undefined;
+  }
+
+  return env.PARTIAL_UPDATE.getByName(FORK_INDEX_OBJECT).lookupFork(forkId);
+}
+
+async function createForkedChat(
+  env: AppEnv,
+  options: {
+    clientId: string;
+    sourceChatId: string;
+  },
+): Promise<string> {
+  const newChatId = newChatIdFromFork();
+  const source = env.PARTIAL_UPDATE.getByName(options.sourceChatId);
+  const snapshot = await source.snapshotForFork();
+  await env.PARTIAL_UPDATE.getByName(newChatId).cloneFromSnapshot(
+    newChatId,
+    options.clientId,
+    snapshot,
+  );
+  return newChatId;
+}
+
+function renderParentRedirect(url: URL): Response {
+  return new Response(
+    `<!DOCTYPE html><script>window.parent.location.href = ${JSON.stringify(
+      url.toString(),
+    )};</script>`,
+    { headers: htmlHeaders },
+  );
+}
+
 function parseRoute(
   pathname: string,
 ):
   | { kind: "home" }
   | { kind: "chat"; chatId: string }
+  | { kind: "fork"; chatId: string }
   | { kind: "socket"; chatId: string }
   | { kind: "debug"; chatId: string }
   | { kind: "debugClear"; chatId: string }
@@ -512,6 +789,10 @@ function parseRoute(
 
   if (parts.length === 1 && isSafeId(parts[0])) {
     return { kind: "chat", chatId: parts[0] };
+  }
+
+  if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "fork") {
+    return { kind: "fork", chatId: parts[0] };
   }
 
   if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "socket") {
@@ -550,6 +831,25 @@ function newChatId(): string {
   return crypto.randomUUID().slice(0, 8);
 }
 
+function newChatIdFromFork(): string {
+  return newChatId();
+}
+
+function newForkClientId(): string {
+  return `fork-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function newForkId(): string {
+  return `fork-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function maxClientId(messages: ChatMessage[]): number {
+  return messages.reduce((max, message) => {
+    const parsed = Number.parseInt(message.clientId, 10);
+    return Number.isFinite(parsed) && parsed >= max ? parsed : max;
+  }, 0);
+}
+
 function getFormString(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
@@ -568,10 +868,17 @@ function formDataToRecord(form: FormData): Record<string, string> {
 function renderAppPage(options: {
   chatId: string;
   clientId: string;
+  connect?: boolean;
+  forkId: string;
   history: ClientUpdate[];
   title: string;
 }): string {
-  const body = injectPageIds(appHtml, options.chatId, options.clientId);
+  const body = injectPageIds(
+    appHtml,
+    options.chatId,
+    options.clientId,
+    options.forkId,
+  );
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -586,7 +893,7 @@ function renderAppPage(options: {
 	</head>
 	<body>
 		${body}
-		<script>${renderClientRuntime(options.chatId, options.clientId, options.history)}</script>
+		<script>${renderClientRuntime(options.chatId, options.clientId, options.history, options.connect ?? true)}</script>
 	</body>
 </html>`;
 }
@@ -595,12 +902,14 @@ function renderClientRuntime(
   chatId: string,
   clientId: string,
   history: ClientUpdate[],
+  connectToSocket: boolean,
 ): string {
   return `
 (() => {
 	const chatId = ${jsonForInlineScript(chatId)};
 	const clientId = ${jsonForInlineScript(clientId)};
 	const history = ${jsonForInlineScript(history)};
+	const connectToSocket = ${jsonForInlineScript(connectToSocket)};
 	const subscriptions = new Set();
 
 	class Subscription {
@@ -813,7 +1122,9 @@ function renderClientRuntime(
 		});
 	};
 
-	connect();
+	if (connectToSocket) {
+		connect();
+	}
 })();`;
 }
 
@@ -1493,10 +1804,11 @@ function toClientUpdate(
   update: Update,
   chatId: string,
   clientId: string,
+  forkId: string,
 ): ClientUpdate {
   return {
     path: update.path,
-    payload: injectServerReplacements(update.payload, chatId, clientId),
+    payload: injectServerReplacements(update.payload, chatId, clientId, forkId),
     type: update.type,
   };
 }
@@ -1505,10 +1817,12 @@ function injectServerReplacements(
   value: string,
   chatId: string,
   clientId: string,
+  forkId: string,
 ): string {
   return value
     .replaceAll(CLIENT_ID_TOKEN, escapeAttribute(clientId))
-    .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId));
+    .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId))
+    .replaceAll(FORK_ID_TOKEN, escapeAttribute(forkId));
 }
 
 function fallbackUpdate(prompt: string, fallbackClientId: string): string {
@@ -1555,8 +1869,13 @@ function normalizeModelOutput(output: string, clientId: string): string {
   return output.replace(userMessagePattern, "$1");
 }
 
-function injectPageIds(html: string, chatId: string, clientId: string): string {
-  return injectServerReplacements(html, chatId, clientId);
+function injectPageIds(
+  html: string,
+  chatId: string,
+  clientId: string,
+  forkId: string,
+): string {
+  return injectServerReplacements(html, chatId, clientId, forkId);
 }
 
 function escapeRegExp(value: string): string {

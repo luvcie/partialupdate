@@ -75,13 +75,6 @@ PpqUtcLGQdYN4oqc:BODY_END
 
 You must put `data-client-id="clientId"` on user message divs (where clientId is the senders clientId). If the input came from the prompt box, include the user's message as part of your HTML response. Remove the `[clientId]:` prefix from visible text.
 
-As the first normal update for a prompt-box response, clear the prompt for the submitting client:
-
-PpqUtcLGQdYN4oqc:BODY_START
-<template for="/chat/prompt"><?start name="/chat/prompt"><textarea name="prompt"></textarea><?end></template>
-PpqUtcLGQdYN4oqc:BODY_END
-PpqUtcLGQdYN4oqc:SPLIT_MESSAGE
-
 To change styles, send HTML containing templates for the style markers:
 
 PpqUtcLGQdYN4oqc:BODY_START

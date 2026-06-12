@@ -2,6 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import appStyles from "./app.css";
 import appHtml from "./app.html";
 import { handleAuthRoute, isAuthRoute } from "./auth/routes";
+import { isAuthEnabled } from "./auth/providers";
+import { getAuthSession } from "./auth/server";
+import {
+  requireRolePermission,
+  type RoleGateResult,
+  type RolePermission,
+} from "./auth/roles";
 import {
   renderDebugPage,
   type DebugState,
@@ -149,6 +156,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     chatId: string,
     forkId: string,
     clientId: string,
+    canSubmit = true,
   ): Promise<string> {
     const updates = this.readAssistantUpdates(1000).filter((update) =>
       shouldSendToClient(update, clientId),
@@ -159,6 +167,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       clientId,
       connect: false,
       forkId,
+      hidePrompt: !canSubmit,
       history: updates.map((update) =>
         toClientUpdate(update, forkId, clientId, forkId),
       ),
@@ -591,6 +600,12 @@ export default {
     const route = parseRoute(url.pathname);
 
     if (request.method === "GET" && route.kind === "home") {
+      const gate = await authorize(request, env, "chat");
+
+      if (!gate.ok) {
+        return gate.response;
+      }
+
       return Response.redirect(
         new URL(`/${newChatId()}`, url.origin).toString(),
         302,
@@ -601,6 +616,12 @@ export default {
       const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
 
       if (forkSourceChatId) {
+        const gate = await authorize(request, env, "viewFork");
+
+        if (!gate.ok) {
+          return gate.response;
+        }
+
         const clientId = newForkClientId();
         const stub = env.PARTIAL_UPDATE.getByName(forkSourceChatId);
         return new Response(
@@ -608,11 +629,18 @@ export default {
             forkSourceChatId,
             route.chatId,
             clientId,
+            gate.role !== "view",
           ),
           {
             headers: htmlHeaders,
           },
         );
+      }
+
+      const gate = await authorize(request, env, "chat");
+
+      if (!gate.ok) {
+        return gate.response;
       }
 
       const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
@@ -623,6 +651,12 @@ export default {
     }
 
     if (request.method === "GET" && route.kind === "fork") {
+      const gate = await authorize(request, env, "chat");
+
+      if (!gate.ok) {
+        return gate.response;
+      }
+
       const forkId = await env.PARTIAL_UPDATE.getByName(
         route.chatId,
       ).getForkId(route.chatId);
@@ -630,6 +664,12 @@ export default {
     }
 
     if (request.method === "GET" && route.kind === "socket") {
+      const gate = await authorize(request, env, "websocket");
+
+      if (!gate.ok) {
+        return gate.response;
+      }
+
       const clientId = url.searchParams.get("clientId");
 
       if (!clientId) {
@@ -649,6 +689,12 @@ export default {
     }
 
     if (request.method === "GET" && route.kind === "debug") {
+      const gate = await authorize(request, env, "debug");
+
+      if (!gate.ok) {
+        return gate.response;
+      }
+
       const debugState = await env.PARTIAL_UPDATE.getByName(
         route.chatId,
       ).getDebugState(route.chatId);
@@ -662,6 +708,12 @@ export default {
 
       if (!clientId || !prompt) {
         return new Response(null, { status: 400 });
+      }
+
+      const gate = await authorize(request, env, "chat");
+
+      if (!gate.ok) {
+        return gate.response;
       }
 
       const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
@@ -694,6 +746,12 @@ export default {
       const fields = formDataToRecord(form);
       const clientId = fields.clientId || "unknown";
 
+      const gate = await authorize(request, env, "chat");
+
+      if (!gate.ok) {
+        return gate.response;
+      }
+
       const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
 
       if (forkSourceChatId) {
@@ -720,6 +778,12 @@ export default {
     }
 
     if (request.method === "POST" && route.kind === "debugClear") {
+      const gate = await authorize(request, env, "debug");
+
+      if (!gate.ok) {
+        return gate.response;
+      }
+
       await env.PARTIAL_UPDATE.getByName(route.chatId).clearHistory();
       return Response.redirect(
         new URL(`/${route.chatId}/debug`, url.origin).toString(),
@@ -730,6 +794,24 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<AppEnv>;
+
+async function authorize(
+  request: Request,
+  env: AppEnv,
+  permission: RolePermission,
+): Promise<RoleGateResult> {
+  if (isAuthEnabled(env) && !env.BETTER_AUTH_SECRET) {
+    return {
+      ok: false,
+      response: new Response("Authentication is not configured", {
+        status: 503,
+      }),
+    };
+  }
+
+  const session = isAuthEnabled(env) ? await getAuthSession(request, env) : null;
+  return requireRolePermission(request, env, session, permission);
+}
 
 async function lookupForkSourceChatId(
   env: AppEnv,
@@ -870,6 +952,7 @@ function renderAppPage(options: {
   clientId: string;
   connect?: boolean;
   forkId: string;
+  hidePrompt?: boolean;
   history: ClientUpdate[];
   title: string;
 }): string {
@@ -890,6 +973,7 @@ function renderAppPage(options: {
 		<script src="https://unpkg.com/template-for-polyfill"></script>
 		<style>${pageStyles}</style>
 		<style>${appStyles}</style>
+		${options.hidePrompt ? "<style>.prompt { display: none !important; }</style>" : ""}
 	</head>
 	<body>
 		${body}

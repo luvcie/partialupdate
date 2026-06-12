@@ -11,6 +11,15 @@ import {
   isAuthProviderEnabled,
   shouldVerifyEmail,
 } from "./providers";
+import {
+  listUsersWithRoles,
+  requireRolePermission,
+  setUserRole,
+  USER_ROLES,
+  isUserRole,
+  type UserRole,
+  type UserWithRole,
+} from "./roles";
 
 const authHtmlHeaders = {
   "Cache-Control": "no-store",
@@ -22,6 +31,7 @@ export function isAuthRoute(pathname: string): boolean {
     pathname === "/sign-in" ||
     pathname === "/sign-out" ||
     pathname === "/sign-up" ||
+    pathname === "/admin" ||
     pathname === "/private-hello" ||
     pathname.startsWith("/api/auth/") ||
     pathname === "/auth/resend-verification" ||
@@ -113,6 +123,14 @@ export async function handleAuthRoute(
 
   if (request.method === "POST" && url.pathname === "/auth/sign-out") {
     return signOut(request, env, { redirect: false });
+  }
+
+  if (request.method === "GET" && url.pathname === "/admin") {
+    return renderAdminRoute(request, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin") {
+    return updateUserRoleRoute(request, env);
   }
 
   if (request.method === "GET" && url.pathname === "/sign-out") {
@@ -264,6 +282,48 @@ async function resendVerificationEmail(
     }),
     { headers: authHtmlHeaders },
   );
+}
+
+async function renderAdminRoute(
+  request: Request,
+  env: AppEnv,
+): Promise<Response> {
+  const session = await getAuthSession(request, env);
+  const gate = await requireRolePermission(request, env, session, "admin");
+
+  if (!gate.ok) {
+    return gate.response;
+  }
+
+  return new Response(renderAdminPage(await listUsersWithRoles(env)), {
+    headers: authHtmlHeaders,
+  });
+}
+
+async function updateUserRoleRoute(
+  request: Request,
+  env: AppEnv,
+): Promise<Response> {
+  const session = await getAuthSession(request, env);
+  const gate = await requireRolePermission(request, env, session, "admin");
+
+  if (!gate.ok) {
+    return gate.response;
+  }
+
+  const form = await request.formData();
+  const userId = getRequiredFormString(form, "userId");
+  const role = getRequiredFormString(form, "role");
+
+  if (!userId || !isUserRole(role)) {
+    return new Response(renderAdminPage(await listUsersWithRoles(env), "Invalid role update."), {
+      headers: authHtmlHeaders,
+      status: 400,
+    });
+  }
+
+  await setUserRole(env, userId, role);
+  return Response.redirect(new URL("/admin", request.url).toString(), 303);
 }
 
 async function readAuthResponseJson(
@@ -459,7 +519,7 @@ async function startSocialSignIn(
   const privacyOk = form.get("privacyOk") === "on";
   const necessaryCookieConsent = form.get("necessaryCookieConsent") === "on";
 
-  if (!privacyOk || !necessaryCookieConsent) {
+  if (mode === "sign-up" && (!privacyOk || !necessaryCookieConsent)) {
     return new Response(
       renderAuthPage(env, mode, "Please confirm both consent options."),
       {
@@ -550,6 +610,174 @@ function appendSetCookieHeaders(target: Headers, source: Headers): void {
   }
 }
 
+function renderAdminPage(users: UserWithRole[], error = ""): string {
+  const rows = users
+    .map(
+      (user) => `<tr>
+        <td>
+          <strong>${escapeHtml(user.name || user.email)}</strong>
+          <span>${escapeHtml(user.email)}</span>
+        </td>
+        <td>${user.emailVerified ? "verified" : "unverified"}</td>
+        <td>${escapeHtml(user.createdAt)}</td>
+        <td>
+          <form method="post" action="/admin">
+            <input type="hidden" name="userId" value="${escapeHtml(user.id)}" />
+            <select name="role">${renderRoleOptions(user.role)}</select>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>`,
+    )
+    .join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin - PartialUpdate</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        background: Canvas;
+        color: CanvasText;
+        margin: 0;
+        padding: 24px;
+      }
+
+      main {
+        margin: 0 auto;
+        max-width: 960px;
+      }
+
+      h1 {
+        font-size: 2rem;
+        margin: 0 0 20px;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+        padding: 12px;
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      td strong,
+      td span {
+        display: block;
+      }
+
+      td span {
+        color: color-mix(in srgb, CanvasText 68%, transparent);
+        font-size: 0.9rem;
+        margin-top: 3px;
+      }
+
+      form {
+        display: flex;
+        gap: 8px;
+      }
+
+      button,
+      select {
+        border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+        border-radius: 6px;
+        font: inherit;
+        min-height: 40px;
+        padding: 0 10px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .error {
+        color: #b42318;
+        font-weight: 700;
+      }
+
+      @media (max-width: 720px) {
+        table,
+        tbody,
+        tr,
+        td {
+          display: block;
+        }
+
+        thead {
+          display: none;
+        }
+
+        tr {
+          border-bottom: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+          padding: 12px 0;
+        }
+
+        td {
+          border: 0;
+          padding: 6px 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Admin</h1>
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+      <table>
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </main>
+  </body>
+</html>`;
+}
+
+function renderRoleOptions(selected: UserRole): string {
+  return USER_ROLES.map(
+    (role) =>
+      `<option value="${role}" ${role === selected ? "selected" : ""}>${role}</option>`,
+  ).join("");
+}
+
+function renderSocialProviderButton(options: {
+  action: string;
+  enabled: boolean;
+  isSignIn: boolean;
+  label: string;
+}): string {
+  return `<button type="submit" formaction="${options.action}" formnovalidate ${options.enabled ? "" : "disabled"}>${options.isSignIn ? "Sign in" : "Sign up"} with ${options.label}</button>`;
+}
+
+function renderConsentFields(): string {
+  return `<label>
+    <input type="checkbox" name="privacyOk" required />
+    <span>I agree to the privacy terms for storing my name and email.</span>
+  </label>
+  <label>
+    <input type="checkbox" name="necessaryCookieConsent" required />
+    <span>I consent to necessary authentication cookies.</span>
+  </label>`;
+}
+
 function renderAuthPage(
   env: AppEnv,
   mode: AuthMode,
@@ -577,7 +805,8 @@ function renderAuthPage(
               <input type="password" name="password" autocomplete="current-password" required />
             </label>
             <button type="submit" formaction="/auth/sign-in/email">Sign in with email</button>
-          </div>`;
+          </div>
+          `;
         }
 
         return `<div class="email-sign-up">
@@ -601,10 +830,20 @@ function renderAuthPage(
       }
 
       if (provider === "GITHUB") {
-        return `<button type="submit" formaction="/auth/sign-in/github" ${githubEnabled ? "" : "disabled"}>${isSignIn ? "Sign in" : "Sign up"} with GitHub</button>`;
+        return renderSocialProviderButton({
+          action: "/auth/sign-in/github",
+          enabled: githubEnabled,
+          isSignIn,
+          label: "GitHub",
+        });
       }
 
-      return `<button type="submit" formaction="/auth/sign-in/google" ${googleEnabled ? "" : "disabled"}>${isSignIn ? "Sign in" : "Sign up"} with Google</button>`;
+      return renderSocialProviderButton({
+        action: "/auth/sign-in/google",
+        enabled: googleEnabled,
+        isSignIn,
+        label: "Google",
+      });
     })
     .join("");
   const title = isSignIn ? "Sign in" : "Sign up";
@@ -757,18 +996,7 @@ function renderAuthPage(
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
       <form method="post">
         <input type="hidden" name="mode" value="${mode}" />
-        ${
-          isSignIn
-            ? ""
-            : `<label>
-          <input type="checkbox" name="privacyOk" required />
-          <span>I agree to the privacy terms for storing my name and email.</span>
-        </label>
-        <label>
-          <input type="checkbox" name="necessaryCookieConsent" required />
-          <span>I consent to necessary authentication cookies.</span>
-        </label>`
-        }
+        ${isSignIn ? "" : renderConsentFields()}
         <div class="actions">
           ${providerControls}
         </div>
@@ -782,7 +1010,7 @@ function renderAuthPage(
           toggle.setAttribute("aria-expanded", "true");
           toggle.hidden = true;
 
-          for (const input of fields.querySelectorAll("input")) {
+          for (const input of fields.querySelectorAll("input:disabled")) {
             input.disabled = false;
             input.required = true;
           }

@@ -6,6 +6,7 @@ import {
   isAuthProviderEnabled,
   shouldVerifyEmail,
 } from "./providers";
+import { assignInitialUserRole } from "./roles";
 
 export type AuthProvider = "github" | "google";
 
@@ -76,6 +77,7 @@ export function createAuth(request: Request, env: AppEnv) {
       user: {
         create: {
           async after(user) {
+            await assignInitialUserRole(env, user.id);
             await upsertUserProfile(
               env,
               {

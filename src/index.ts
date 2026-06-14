@@ -53,8 +53,14 @@ type ClientUpdate = {
   payload: string;
 };
 
+type ClientSession = {
+  clientId: string;
+  clientSecret: string;
+};
+
 type WebSocketAttachment = {
 	clientId: string;
+	clientSecret: string;
 	chatId: string;
 };
 
@@ -79,6 +85,7 @@ const CLIENT_PROPS_END = `${PROTOCOL_PREFIX}:CLIENT_PROPS_END`;
 const BODY_START = `${PROTOCOL_PREFIX}:BODY_START`;
 const BODY_END = `${PROTOCOL_PREFIX}:BODY_END`;
 const CLIENT_ID_TOKEN = `${PROTOCOL_PREFIX}:CLIENT_ID`;
+const CLIENT_SECRET_TOKEN = `${PROTOCOL_PREFIX}:CLIENT_SECRET`;
 const CHAT_ID_TOKEN = `${PROTOCOL_PREFIX}:CHAT_ID`;
 const FORK_ID_TOKEN = `${PROTOCOL_PREFIX}:FORK_ID`;
 const FORK_INDEX_OBJECT = "__fork_index";
@@ -102,9 +109,10 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
       const chatId = url.searchParams.get("chatId");
       const clientId = url.searchParams.get("clientId");
+      const clientSecret = url.searchParams.get("clientSecret");
 
-      if (!chatId || !clientId) {
-        return new Response("Missing chatId or clientId", { status: 400 });
+      if (!chatId || !clientId || !clientSecret) {
+        return new Response("Missing chatId or client session", { status: 400 });
       }
 
       const pair = new WebSocketPair();
@@ -113,6 +121,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       server.serializeAttachment({
         chatId,
         clientId,
+        clientSecret,
       } satisfies WebSocketAttachment);
 
       return new Response(null, {
@@ -130,19 +139,57 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     return String(clientId);
   }
 
-  async getInitialPage(chatId: string, clientId: string): Promise<string> {
+  async issueClientSession(
+    requestedClientId = "",
+    requestedClientSecret = "",
+  ): Promise<ClientSession> {
+    if (
+      requestedClientId &&
+      requestedClientSecret &&
+      this.isValidClientSession(requestedClientId, requestedClientSecret)
+    ) {
+      this.touchClientSession(requestedClientId);
+      return {
+        clientId: requestedClientId,
+        clientSecret: requestedClientSecret,
+      };
+    }
+
+    const clientId = await this.nextClientId();
+    const clientSecret = newClientSecret();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO clients (client_id, secret, created_at, last_seen_at) VALUES (?, ?, ?, ?)",
+      clientId,
+      clientSecret,
+      Date.now(),
+      Date.now(),
+    );
+    return { clientId, clientSecret };
+  }
+
+  async getInitialPage(
+    chatId: string,
+    clientSession: ClientSession,
+  ): Promise<string> {
     const forkId = await this.ensureForkId(chatId);
-    this.ensureSystemMessage(clientId, chatId);
+    this.ensureSystemMessage(clientSession.clientId, chatId);
     const updates = this.readAssistantUpdates(1000).filter((update) =>
-      shouldSendToClient(update, clientId),
+      shouldSendToClient(update, clientSession.clientId),
     );
 
     return renderAppPage({
       chatId,
-      clientId,
+      clientId: clientSession.clientId,
+      clientSecret: clientSession.clientSecret,
       forkId,
       history: updates.map((update) =>
-        toClientUpdate(update, chatId, clientId, forkId),
+        toClientUpdate(
+          update,
+          chatId,
+          clientSession.clientId,
+          clientSession.clientSecret,
+          forkId,
+        ),
       ),
       title: `PartialUpdate ${chatId}`,
     });
@@ -155,21 +202,28 @@ export class PartialUpdate extends DurableObject<AppEnv> {
   async getReadOnlyForkPage(
     chatId: string,
     forkId: string,
-    clientId: string,
+    clientSession: ClientSession,
     canSubmit = true,
   ): Promise<string> {
     const updates = this.readAssistantUpdates(1000).filter((update) =>
-      shouldSendToClient(update, clientId),
+      shouldSendToClient(update, clientSession.clientId),
     );
 
     return renderAppPage({
       chatId: forkId,
-      clientId,
+      clientId: clientSession.clientId,
+      clientSecret: clientSession.clientSecret,
       connect: false,
       forkId,
-      hidePrompt: !canSubmit,
+      interceptSubmits: !canSubmit,
       history: updates.map((update) =>
-        toClientUpdate(update, forkId, clientId, forkId),
+        toClientUpdate(
+          update,
+          forkId,
+          clientSession.clientId,
+          clientSession.clientSecret,
+          forkId,
+        ),
       ),
       title: `PartialUpdate fork ${forkId}`,
     });
@@ -195,6 +249,51 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 	<?marker name="/chat/append-message">
 </template>`,
       type: "html",
+    });
+    await this.broadcastReload();
+  }
+
+  async validateClientSession(
+    clientId: string,
+    clientSecret: string,
+  ): Promise<boolean> {
+    if (!clientId || !clientSecret) {
+      return false;
+    }
+
+    const valid = this.isValidClientSession(clientId, clientSecret);
+
+    if (valid) {
+      this.touchClientSession(clientId);
+    }
+
+    return valid;
+  }
+
+  async hardUndo(undoCount: number, submittingClientId: string): Promise<void> {
+    const count = normalizeUndoCount(undoCount);
+
+    for (let index = 0; index < count; index += 1) {
+      this.deleteLatestVisibleTurn();
+      this.deleteLatestLlmTurn();
+    }
+
+    if (count > 0) {
+      await this.broadcast({
+        clients: { mode: "exclude", ids: [submittingClientId] },
+        path: "/page/reload",
+        payload: "{}",
+        type: "json",
+      });
+    }
+  }
+
+  async broadcastReload(): Promise<void> {
+    await this.broadcast({
+      clients: { mode: "exclude", ids: [] },
+      path: "/page/reload",
+      payload: "{}",
+      type: "json",
     });
   }
 
@@ -284,7 +383,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
   ): Promise<void> {
     const description = fields.description?.trim() || "form submission";
     const fieldText = Object.entries(fields)
-      .filter(([key]) => key !== "clientId")
+      .filter(([key]) => key !== "clientId" && key !== "clientSecret")
       .map(([key, value]) => `${key}: ${value}`)
       .join("\n");
     const prompt = `${clientId}: ${description}\n${fieldText}`.trim();
@@ -330,14 +429,21 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 				value TEXT NOT NULL
 			);
 
-			CREATE TABLE IF NOT EXISTS llm_messages (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				role TEXT NOT NULL,
-				content TEXT NOT NULL,
-				created_at INTEGER NOT NULL
-			);
+				CREATE TABLE IF NOT EXISTS llm_messages (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					role TEXT NOT NULL,
+					content TEXT NOT NULL,
+					created_at INTEGER NOT NULL
+				);
 
-			CREATE TABLE IF NOT EXISTS fork_index (
+				CREATE TABLE IF NOT EXISTS clients (
+					client_id TEXT PRIMARY KEY,
+					secret TEXT NOT NULL,
+					created_at INTEGER NOT NULL,
+					last_seen_at INTEGER NOT NULL
+				);
+
+				CREATE TABLE IF NOT EXISTS fork_index (
 				fork_id TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
 				created_at INTEGER NOT NULL
@@ -419,6 +525,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
               update,
               attachment.chatId,
               attachment.clientId,
+              attachment.clientSecret,
               forkId,
             ),
           ),
@@ -430,6 +537,54 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
     for (const socket of staleSockets) {
       socket.close(1011, "Stale socket");
+    }
+  }
+
+  private deleteLatestVisibleTurn(): void {
+    const assistant = this.ctx.storage.sql
+      .exec("SELECT id FROM messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1")
+      .toArray() as Array<{ id: number }>;
+    const assistantId = assistant[0]?.id;
+
+    if (!assistantId) {
+      return;
+    }
+
+    const prompt = this.ctx.storage.sql
+      .exec(
+        "SELECT id FROM messages WHERE id < ? AND role IN ('user', 'form') ORDER BY id DESC LIMIT 1",
+        assistantId,
+      )
+      .toArray() as Array<{ id: number }>;
+
+    this.ctx.storage.sql.exec("DELETE FROM messages WHERE id = ?", assistantId);
+
+    if (prompt[0]?.id) {
+      this.ctx.storage.sql.exec("DELETE FROM messages WHERE id = ?", prompt[0].id);
+    }
+  }
+
+  private deleteLatestLlmTurn(): void {
+    const assistant = this.ctx.storage.sql
+      .exec("SELECT id FROM llm_messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1")
+      .toArray() as Array<{ id: number }>;
+    const assistantId = assistant[0]?.id;
+
+    if (!assistantId) {
+      return;
+    }
+
+    const prompt = this.ctx.storage.sql
+      .exec(
+        "SELECT id FROM llm_messages WHERE id < ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+        assistantId,
+      )
+      .toArray() as Array<{ id: number }>;
+
+    this.ctx.storage.sql.exec("DELETE FROM llm_messages WHERE id = ?", assistantId);
+
+    if (prompt[0]?.id) {
+      this.ctx.storage.sql.exec("DELETE FROM llm_messages WHERE id = ?", prompt[0].id);
     }
   }
 
@@ -536,6 +691,24 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     this.setMetadata("nextClientId", String(value));
   }
 
+  private isValidClientSession(clientId: string, clientSecret: string): boolean {
+    const rows = this.ctx.storage.sql
+      .exec(
+        "SELECT secret FROM clients WHERE client_id = ?",
+        clientId,
+      )
+      .toArray() as Array<{ secret: string }>;
+    return rows[0]?.secret === clientSecret;
+  }
+
+  private touchClientSession(clientId: string): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE clients SET last_seen_at = ? WHERE client_id = ?",
+      Date.now(),
+      clientId,
+    );
+  }
+
   private readForkId(): string {
     return this.getMetadata("forkId") ?? "";
   }
@@ -598,6 +771,8 @@ export default {
     }
 
     const route = parseRoute(url.pathname);
+    const undoCount = parseUndoCount(url.searchParams.get("undo"));
+    const hasUndoParam = url.searchParams.has("undo");
 
     if (request.method === "GET" && route.kind === "home") {
       const gate = await authorize(request, env, "chat");
@@ -616,20 +791,34 @@ export default {
       const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
 
       if (forkSourceChatId) {
-        const gate = await authorize(request, env, "viewFork");
+        const gate = await authorize(
+          request,
+          env,
+          hasUndoParam ? "chat" : "viewFork",
+        );
 
         if (!gate.ok) {
           return gate.response;
         }
 
-        const clientId = newForkClientId();
+        if (hasUndoParam) {
+          if (undoCount > 0) {
+            await env.PARTIAL_UPDATE.getByName(forkSourceChatId).hardUndo(
+              undoCount,
+              "",
+            );
+          }
+          return Response.redirect(new URL(`/${route.chatId}`, url.origin).toString(), 303);
+        }
+
+        const clientSession = newForkClientSession();
         const stub = env.PARTIAL_UPDATE.getByName(forkSourceChatId);
         return new Response(
           await stub.getReadOnlyForkPage(
             forkSourceChatId,
             route.chatId,
-            clientId,
-            gate.role !== "view",
+            clientSession,
+            canBurnTokens(gate.role),
           ),
           {
             headers: htmlHeaders,
@@ -644,10 +833,24 @@ export default {
       }
 
       const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
-      const clientId = await stub.nextClientId();
-      return new Response(await stub.getInitialPage(route.chatId, clientId), {
-        headers: htmlHeaders,
-      });
+
+      if (hasUndoParam) {
+        if (undoCount > 0) {
+          await stub.hardUndo(undoCount, "");
+        }
+        return Response.redirect(new URL(`/${route.chatId}`, url.origin).toString(), 303);
+      }
+
+      const clientSession = await stub.issueClientSession(
+        url.searchParams.get("clientId") || "",
+        url.searchParams.get("clientSecret") || "",
+      );
+      return new Response(
+        await stub.getInitialPage(route.chatId, clientSession),
+        {
+          headers: htmlHeaders,
+        },
+      );
     }
 
     if (request.method === "GET" && route.kind === "fork") {
@@ -671,14 +874,25 @@ export default {
       }
 
       const clientId = url.searchParams.get("clientId");
+      const clientSecret = url.searchParams.get("clientSecret");
 
-      if (!clientId) {
-        return new Response("Missing clientId", { status: 400 });
+      if (!clientId || !clientSecret) {
+        return new Response("Missing client session", { status: 400 });
+      }
+
+      if (
+        !(await env.PARTIAL_UPDATE.getByName(route.chatId).validateClientSession(
+          clientId,
+          clientSecret,
+        ))
+      ) {
+        return new Response("Invalid client session", { status: 403 });
       }
 
       const socketUrl = new URL("https://partialupdate.internal/socket");
       socketUrl.searchParams.set("chatId", route.chatId);
       socketUrl.searchParams.set("clientId", clientId);
+      socketUrl.searchParams.set("clientSecret", clientSecret);
 
       return env.PARTIAL_UPDATE.getByName(route.chatId).fetch(
         new Request(socketUrl.toString(), {
@@ -704,9 +918,10 @@ export default {
     if (request.method === "POST" && route.kind === "prompt") {
       const form = await request.formData();
       const clientId = getFormString(form, "clientId");
+      const clientSecret = getFormString(form, "clientSecret");
       const prompt = getFormString(form, "prompt");
 
-      if (!clientId || !prompt) {
+      if (!clientId || !clientSecret || !prompt) {
         return new Response(null, { status: 400 });
       }
 
@@ -723,8 +938,9 @@ export default {
           clientId,
           sourceChatId: forkSourceChatId,
         });
+        const newStub = env.PARTIAL_UPDATE.getByName(newChatId);
 
-        await env.PARTIAL_UPDATE.getByName(newChatId).submitPrompt(
+        await newStub.submitPrompt(
           clientId,
           prompt,
           newChatId,
@@ -733,7 +949,13 @@ export default {
         return renderParentRedirect(new URL(`/${newChatId}`, url.origin));
       }
 
-      await env.PARTIAL_UPDATE.getByName(route.chatId).submitPrompt(
+      const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
+
+      if (!(await stub.validateClientSession(clientId, clientSecret))) {
+        return new Response("Invalid client session", { status: 403 });
+      }
+
+      await stub.submitPrompt(
         clientId,
         prompt,
         route.chatId,
@@ -745,6 +967,7 @@ export default {
       const form = await request.formData();
       const fields = formDataToRecord(form);
       const clientId = fields.clientId || "unknown";
+      const clientSecret = fields.clientSecret || "";
 
       const gate = await authorize(request, env, "chat");
 
@@ -759,8 +982,9 @@ export default {
           clientId,
           sourceChatId: forkSourceChatId,
         });
+        const newStub = env.PARTIAL_UPDATE.getByName(newChatId);
 
-        await env.PARTIAL_UPDATE.getByName(newChatId).submitForm(
+        await newStub.submitForm(
           clientId,
           fields,
           newChatId,
@@ -769,7 +993,13 @@ export default {
         return renderParentRedirect(new URL(`/${newChatId}`, url.origin));
       }
 
-      await env.PARTIAL_UPDATE.getByName(route.chatId).submitForm(
+      const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
+
+      if (!(await stub.validateClientSession(clientId, clientSecret))) {
+        return new Response("Invalid client session", { status: 403 });
+      }
+
+      await stub.submitForm(
         clientId,
         fields,
         route.chatId,
@@ -811,6 +1041,12 @@ async function authorize(
 
   const session = isAuthEnabled(env) ? await getAuthSession(request, env) : null;
   return requireRolePermission(request, env, session, permission);
+}
+
+function canBurnTokens(
+  role: "admin" | "dev" | "chat" | "view" | "blocked" | "anonymous" | "disabled",
+): boolean {
+  return role === "admin" || role === "dev" || role === "chat" || role === "disabled";
 }
 
 async function lookupForkSourceChatId(
@@ -913,12 +1149,19 @@ function newChatId(): string {
   return crypto.randomUUID().slice(0, 8);
 }
 
+function newClientSecret(): string {
+  return crypto.randomUUID();
+}
+
 function newChatIdFromFork(): string {
   return newChatId();
 }
 
-function newForkClientId(): string {
-  return `fork-${crypto.randomUUID().slice(0, 8)}`;
+function newForkClientSession(): ClientSession {
+  return {
+    clientId: `fork-${crypto.randomUUID().slice(0, 8)}`,
+    clientSecret: newClientSecret(),
+  };
 }
 
 function newForkId(): string {
@@ -930,6 +1173,18 @@ function maxClientId(messages: ChatMessage[]): number {
     const parsed = Number.parseInt(message.clientId, 10);
     return Number.isFinite(parsed) && parsed >= max ? parsed : max;
   }, 0);
+}
+
+function parseUndoCount(value: string | null): number {
+  if (!value) {
+    return 0;
+  }
+
+  return normalizeUndoCount(Number.parseInt(value, 10));
+}
+
+function normalizeUndoCount(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 100) : 0;
 }
 
 function getFormString(form: FormData, name: string): string {
@@ -950,9 +1205,11 @@ function formDataToRecord(form: FormData): Record<string, string> {
 function renderAppPage(options: {
   chatId: string;
   clientId: string;
+  clientSecret: string;
   connect?: boolean;
   forkId: string;
   hidePrompt?: boolean;
+  interceptSubmits?: boolean;
   history: ClientUpdate[];
   title: string;
 }): string {
@@ -960,6 +1217,7 @@ function renderAppPage(options: {
     appHtml,
     options.chatId,
     options.clientId,
+    options.clientSecret,
     options.forkId,
   );
 
@@ -969,6 +1227,7 @@ function renderAppPage(options: {
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>${escapeHtml(options.title)}</title>
+		<script>${renderClientSessionRedirect(options.chatId)}</script>
 		<script src="https://unpkg.com/html-setters-polyfill"></script>
 		<script src="https://unpkg.com/template-for-polyfill"></script>
 		<style>${pageStyles}</style>
@@ -977,24 +1236,66 @@ function renderAppPage(options: {
 	</head>
 	<body>
 		${body}
-		<script>${renderClientRuntime(options.chatId, options.clientId, options.history, options.connect ?? true)}</script>
+			<script>${renderClientRuntime(options.chatId, options.clientId, options.clientSecret, options.history, options.connect ?? true, options.interceptSubmits ?? false)}</script>
 	</body>
 </html>`;
+}
+
+function renderClientSessionRedirect(chatId: string): string {
+  return `
+(() => {
+	const chatId = ${jsonForInlineScript(chatId)};
+	const key = "partialupdate:chat:" + chatId;
+	const stored = sessionStorage.getItem(key);
+	const url = new URL(window.location.href);
+
+	if (!stored || url.searchParams.has("clientId") || url.searchParams.has("clientSecret")) {
+		return;
+	}
+
+	try {
+		const session = JSON.parse(stored);
+
+		if (!session?.clientId || !session?.clientSecret) {
+			return;
+		}
+
+		url.searchParams.set("clientId", session.clientId);
+		url.searchParams.set("clientSecret", session.clientSecret);
+		window.location.replace(url.toString());
+	} catch {
+		sessionStorage.removeItem(key);
+	}
+})();`;
 }
 
 function renderClientRuntime(
   chatId: string,
   clientId: string,
+  clientSecret: string,
   history: ClientUpdate[],
   connectToSocket: boolean,
+  interceptSubmits: boolean,
 ): string {
   return `
 (() => {
 	const chatId = ${jsonForInlineScript(chatId)};
 	const clientId = ${jsonForInlineScript(clientId)};
+	const clientSecret = ${jsonForInlineScript(clientSecret)};
 	const history = ${jsonForInlineScript(history)};
 	const connectToSocket = ${jsonForInlineScript(connectToSocket)};
+	const interceptSubmits = ${jsonForInlineScript(interceptSubmits)};
 	const subscriptions = new Set();
+	let replayingHistory = true;
+	const sessionStorageKey = "partialupdate:chat:" + chatId;
+	sessionStorage.setItem(sessionStorageKey, JSON.stringify({ clientId, clientSecret }));
+
+	const cleanUrl = new URL(window.location.href);
+	if (cleanUrl.searchParams.has("clientId") || cleanUrl.searchParams.has("clientSecret")) {
+		cleanUrl.searchParams.delete("clientId");
+		cleanUrl.searchParams.delete("clientSecret");
+		window.history.replaceState(null, "", cleanUrl.toString());
+	}
 
 	class Subscription {
 		constructor(match, handler) {
@@ -1146,6 +1447,33 @@ function renderClientRuntime(
 			}
 		};
 
+	const appendLocalAgentMessage = (text) => {
+		const chat = document.querySelector(".chat");
+
+		if (!chat) {
+			return;
+		}
+
+		const message = document.createElement("div");
+		message.className = "message message-agent";
+		message.textContent = text;
+		chat.append(message);
+		requestAnimationFrame(() => {
+			document.documentElement.scrollTo({
+				top: document.documentElement.scrollHeight,
+				behavior: "smooth"
+			});
+		});
+	};
+
+	if (interceptSubmits) {
+		document.addEventListener("submit", (event) => {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			appendLocalAgentMessage("To chat you need an account with permission to burn tokens. However you can deploy your own copy of this to Cloudflare from GitHub.");
+		}, true);
+	}
+
 	window.Subscription = Subscription;
 	window.partialupdates = {
 		clientId,
@@ -1169,18 +1497,53 @@ function renderClientRuntime(
 		}
 	));
 
+	window.partialupdates.subscribe(new Subscription(
+		(update) => !replayingHistory && update.path === "/page/reload" && update.type === "json",
+		() => {
+			window.location.reload();
+		}
+	));
+
 	for (const update of history) {
 		dispatch(update);
 	}
+	replayingHistory = false;
+
+	let reconnectDelay = 1000;
+	let reconnectTimer = 0;
+	let socket = null;
+
+	const socketIsOpenOrOpening = () =>
+		socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING;
+
+	const scheduleReconnect = () => {
+		window.clearTimeout(reconnectTimer);
+
+		if (!connectToSocket || document.visibilityState !== "visible" || socketIsOpenOrOpening()) {
+			return;
+		}
+
+		const jitter = Math.floor(Math.random() * 500);
+		reconnectTimer = window.setTimeout(() => {
+			connect();
+			reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+		}, reconnectDelay + jitter);
+	};
 
 	const connect = () => {
+		if (!connectToSocket || document.visibilityState !== "visible" || socketIsOpenOrOpening()) {
+			return;
+		}
+
 		const url = new URL("/" + encodeURIComponent(chatId) + "/socket", window.location.href);
 		url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 		url.searchParams.set("clientId", clientId);
-		const socket = new WebSocket(url);
+		url.searchParams.set("clientSecret", clientSecret);
+		socket = new WebSocket(url);
 		let pingTimer;
 
 		socket.addEventListener("open", () => {
+			reconnectDelay = 1000;
 			pingTimer = window.setInterval(() => {
 				if (socket.readyState === WebSocket.OPEN) {
 					socket.send("ping");
@@ -1202,9 +1565,17 @@ function renderClientRuntime(
 
 		socket.addEventListener("close", () => {
 			window.clearInterval(pingTimer);
-			window.setTimeout(connect, 1000);
+			socket = null;
+			scheduleReconnect();
 		});
 	};
+
+	document.addEventListener("visibilitychange", () => {
+		if (document.visibilityState === "visible") {
+			reconnectDelay = 1000;
+			scheduleReconnect();
+		}
+	});
 
 	if (connectToSocket) {
 		connect();
@@ -1398,7 +1769,10 @@ function formatClientPrompt(clientId: string, prompt: string): string {
 }
 
 function formatFormPrompt(fields: Record<string, string>): string {
-  return `[form]:${new URLSearchParams(fields).toString()}`;
+  const visibleFields = Object.fromEntries(
+    Object.entries(fields).filter(([key]) => key !== "clientSecret"),
+  );
+  return `[form]:${new URLSearchParams(visibleFields).toString()}`;
 }
 
 function gatewayChatMessagesFromMessages(messages: LlmMessage[]): Array<{
@@ -1888,11 +2262,18 @@ function toClientUpdate(
   update: Update,
   chatId: string,
   clientId: string,
+  clientSecret: string,
   forkId: string,
 ): ClientUpdate {
   return {
     path: update.path,
-    payload: injectServerReplacements(update.payload, chatId, clientId, forkId),
+    payload: injectServerReplacements(
+      update.payload,
+      chatId,
+      clientId,
+      clientSecret,
+      forkId,
+    ),
     type: update.type,
   };
 }
@@ -1901,10 +2282,12 @@ function injectServerReplacements(
   value: string,
   chatId: string,
   clientId: string,
+  clientSecret: string,
   forkId: string,
 ): string {
   return value
     .replaceAll(CLIENT_ID_TOKEN, escapeAttribute(clientId))
+    .replaceAll(CLIENT_SECRET_TOKEN, escapeAttribute(clientSecret))
     .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId))
     .replaceAll(FORK_ID_TOKEN, escapeAttribute(forkId));
 }
@@ -1957,9 +2340,16 @@ function injectPageIds(
   html: string,
   chatId: string,
   clientId: string,
+  clientSecret: string,
   forkId: string,
 ): string {
-  return injectServerReplacements(html, chatId, clientId, forkId);
+  return injectServerReplacements(
+    html,
+    chatId,
+    clientId,
+    clientSecret,
+    forkId,
+  );
 }
 
 function escapeRegExp(value: string): string {

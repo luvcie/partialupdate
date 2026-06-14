@@ -91,12 +91,10 @@ export async function handleAuthRoute(
     (url.pathname === "/sign-in" || url.pathname === "/sign-up")
   ) {
     const session = await getAuthSession(request, env);
+    const nextPath = nextPathFromUrl(url);
 
     if (session?.user.emailVerified) {
-      return Response.redirect(
-        new URL("/private-hello", url.origin).toString(),
-        302,
-      );
+      return Response.redirect(new URL(nextPath, url.origin).toString(), 302);
     }
 
     if (session && shouldVerifyEmail(env)) {
@@ -109,9 +107,14 @@ export async function handleAuthRoute(
       );
     }
 
-    return new Response(renderAuthPage(env, authModeFromPath(url.pathname)), {
-      headers: authHtmlHeaders,
-    });
+    return new Response(
+      renderAuthPage(env, authModeFromPath(url.pathname), {
+        nextPath,
+      }),
+      {
+        headers: authHtmlHeaders,
+      },
+    );
   }
 
   if (
@@ -159,7 +162,7 @@ export async function handleAuthRoute(
     const session = await getAuthSession(request, env);
 
     if (!session) {
-      return Response.redirect(new URL("/sign-up", url.origin).toString(), 302);
+      return Response.redirect(authPageUrl(url, "/sign-up"), 302);
     }
 
     if (shouldVerifyEmail(env) && !session.user.emailVerified) {
@@ -208,7 +211,9 @@ async function signOut(
         },
         status: 303,
       })
-    : new Response(null, { status: authResponse.ok ? 204 : authResponse.status });
+    : new Response(null, {
+        status: authResponse.ok ? 204 : authResponse.status,
+      });
   appendSetCookieHeaders(response.headers, authResponse.headers);
   return response;
 }
@@ -316,10 +321,13 @@ async function updateUserRoleRoute(
   const role = getRequiredFormString(form, "role");
 
   if (!userId || !isUserRole(role)) {
-    return new Response(renderAdminPage(await listUsersWithRoles(env), "Invalid role update."), {
-      headers: authHtmlHeaders,
-      status: 400,
-    });
+    return new Response(
+      renderAdminPage(await listUsersWithRoles(env), "Invalid role update."),
+      {
+        headers: authHtmlHeaders,
+        status: 400,
+      },
+    );
   }
 
   await setUserRole(env, userId, role);
@@ -337,6 +345,43 @@ async function readAuthResponseJson(
 }
 
 type AuthMode = "sign-in" | "sign-up";
+
+function nextPathFromUrl(url: URL): string {
+  return normalizeNextPath(url.searchParams.get("next"));
+}
+
+function nextPathFromForm(form: FormData): string {
+  return normalizeNextPath(getRequiredFormString(form, "next"));
+}
+
+function normalizeNextPath(value: string | null): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return "/private-hello";
+  }
+
+  return value.startsWith("/auth/") ||
+    value === "/sign-in" ||
+    value === "/sign-up" ||
+    value === "/sign-out"
+    ? "/private-hello"
+    : value;
+}
+
+function urlWithNext(pathname: string, nextPath: string): string {
+  const params = new URLSearchParams();
+
+  if (nextPath !== "/private-hello") {
+    params.set("next", nextPath);
+  }
+
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
+function authPageUrl(source: URL, pathname: "/sign-in" | "/sign-up"): string {
+  const nextPath = normalizeNextPath(source.pathname + source.search);
+  return new URL(urlWithNext(pathname, nextPath), source.origin).toString();
+}
 
 function authModeFromPath(pathname: string): AuthMode {
   return pathname === "/sign-in" ? "sign-in" : "sign-up";
@@ -362,15 +407,15 @@ async function startEmailPasswordSignUp(
   const password = getRequiredFormString(form, "password");
   const privacyOk = form.get("privacyOk") === "on";
   const necessaryCookieConsent = form.get("necessaryCookieConsent") === "on";
+  const nextPath = nextPathFromForm(form);
 
   if (!name || !email || !password || !privacyOk || !necessaryCookieConsent) {
     return new Response(
-      renderAuthPage(
-        env,
-        "sign-up",
-        "Please complete all required fields.",
-        true,
-      ),
+      renderAuthPage(env, "sign-up", {
+        error: "Please complete all required fields.",
+        nextPath,
+        showEmailForm: true,
+      }),
       {
         headers: authHtmlHeaders,
         status: 400,
@@ -383,7 +428,7 @@ async function startEmailPasswordSignUp(
     new URL("/api/auth/sign-up/email", url.origin).toString(),
     {
       body: JSON.stringify({
-        callbackURL: "/private-hello",
+        callbackURL: nextPath,
         email,
         name,
         password,
@@ -404,12 +449,11 @@ async function startEmailPasswordSignUp(
 
   if (!authResponse.ok) {
     return new Response(
-      renderAuthPage(
-        env,
-        "sign-up",
-        data.message || "Unable to create account.",
-        true,
-      ),
+      renderAuthPage(env, "sign-up", {
+        error: data.message || "Unable to create account.",
+        nextPath,
+        showEmailForm: true,
+      }),
       {
         headers: authHtmlHeaders,
         status: authResponse.status,
@@ -428,7 +472,7 @@ async function startEmailPasswordSignUp(
 
   const response = new Response(null, {
     headers: {
-      Location: new URL("/private-hello", url.origin).toString(),
+      Location: new URL(nextPath, url.origin).toString(),
     },
     status: 303,
   });
@@ -449,10 +493,14 @@ async function startEmailPasswordSignIn(
   const form = await request.formData();
   const email = getRequiredFormString(form, "email");
   const password = getRequiredFormString(form, "password");
+  const nextPath = nextPathFromForm(form);
 
   if (!email || !password) {
     return new Response(
-      renderAuthPage(env, "sign-in", "Please complete all required fields."),
+      renderAuthPage(env, "sign-in", {
+        error: "Please complete all required fields.",
+        nextPath,
+      }),
       {
         headers: authHtmlHeaders,
         status: 400,
@@ -465,7 +513,7 @@ async function startEmailPasswordSignIn(
     new URL("/api/auth/sign-in/email", url.origin).toString(),
     {
       body: JSON.stringify({
-        callbackURL: "/private-hello",
+        callbackURL: nextPath,
         email,
         password,
       }),
@@ -491,7 +539,10 @@ async function startEmailPasswordSignIn(
     }
 
     return new Response(
-      renderAuthPage(env, "sign-in", data.message || "Unable to sign in."),
+      renderAuthPage(env, "sign-in", {
+        error: data.message || "Unable to sign in.",
+        nextPath,
+      }),
       {
         headers: authHtmlHeaders,
         status: authResponse.status,
@@ -501,7 +552,7 @@ async function startEmailPasswordSignIn(
 
   const response = new Response(null, {
     headers: {
-      Location: new URL("/private-hello", url.origin).toString(),
+      Location: new URL(nextPath, url.origin).toString(),
     },
     status: 303,
   });
@@ -518,10 +569,14 @@ async function startSocialSignIn(
   const mode = getAuthModeFromForm(form);
   const privacyOk = form.get("privacyOk") === "on";
   const necessaryCookieConsent = form.get("necessaryCookieConsent") === "on";
+  const nextPath = nextPathFromForm(form);
 
   if (mode === "sign-up" && (!privacyOk || !necessaryCookieConsent)) {
     return new Response(
-      renderAuthPage(env, mode, "Please confirm both consent options."),
+      renderAuthPage(env, mode, {
+        error: "Please confirm both consent options.",
+        nextPath,
+      }),
       {
         headers: authHtmlHeaders,
         status: 400,
@@ -531,11 +586,10 @@ async function startSocialSignIn(
 
   if (!hasProviderCredentials(env, provider)) {
     return new Response(
-      renderAuthPage(
-        env,
-        mode,
-        `The ${provider} provider is not configured yet.`,
-      ),
+      renderAuthPage(env, mode, {
+        error: `The ${provider} provider is not configured yet.`,
+        nextPath,
+      }),
       {
         headers: authHtmlHeaders,
         status: 503,
@@ -548,9 +602,9 @@ async function startSocialSignIn(
     new URL("/api/auth/sign-in/social", url.origin).toString(),
     {
       body: JSON.stringify({
-        callbackURL: "/private-hello",
-        errorCallbackURL: "/sign-up",
-        newUserCallbackURL: "/private-hello",
+        callbackURL: nextPath,
+        errorCallbackURL: urlWithNext("/sign-up", nextPath),
+        newUserCallbackURL: nextPath,
         provider,
         requestSignUp: mode === "sign-up",
       }),
@@ -781,13 +835,18 @@ function renderConsentFields(): string {
 function renderAuthPage(
   env: AppEnv,
   mode: AuthMode,
-  error = "",
-  showEmailForm = false,
+  options: {
+    error?: string;
+    nextPath?: string;
+    showEmailForm?: boolean;
+  } = {},
 ): string {
   const providers = getEnabledAuthProviderList(env);
-  const emailOnly =
-    providers.length === 1 && providers[0] === "EMAIL_PASSWORD";
-  const emailFormVisible = mode === "sign-up" && (showEmailForm || emailOnly);
+  const emailOnly = providers.length === 1 && providers[0] === "EMAIL_PASSWORD";
+  const error = options.error || "";
+  const nextPath = normalizeNextPath(options.nextPath || "");
+  const emailFormVisible =
+    mode === "sign-up" && (options.showEmailForm || emailOnly);
   const githubEnabled = hasProviderCredentials(env, "github");
   const googleEnabled = hasProviderCredentials(env, "google");
   const isSignIn = mode === "sign-in";
@@ -990,12 +1049,13 @@ function renderAuthPage(
       <h1>${title}</h1>
       <p>${isSignIn ? "Sign in to your PartialUpdate account." : "Create a PartialUpdate account."}</p>
       <nav class="tabs" aria-label="Authentication">
-        <a class="tab" href="/sign-in" ${isSignIn ? `aria-current="page"` : ""}>Sign in</a>
-        <a class="tab" href="/sign-up" ${isSignIn ? "" : `aria-current="page"`}>Sign up</a>
+        <a class="tab" href="${escapeHtml(urlWithNext("/sign-in", nextPath))}" ${isSignIn ? `aria-current="page"` : ""}>Sign in</a>
+        <a class="tab" href="${escapeHtml(urlWithNext("/sign-up", nextPath))}" ${isSignIn ? "" : `aria-current="page"`}>Sign up</a>
       </nav>
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
       <form method="post">
         <input type="hidden" name="mode" value="${mode}" />
+        <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
         ${isSignIn ? "" : renderConsentFields()}
         <div class="actions">
           ${providerControls}

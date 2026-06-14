@@ -14,6 +14,7 @@
         <div class="prompt">
             <form method="post" action="PpqUtcLGQdYN4oqc:CHAT_ID/prompt" target="hidden-submit-frame" onsubmit="const prompt = this.elements.namedItem('prompt'); if (!(prompt instanceof HTMLTextAreaElement)) return true; if (!prompt.value.trim()) { event.preventDefault(); return false; } setTimeout(() => { prompt.value = ''; }, 0);">
                 <input hidden name="clientId" value="PpqUtcLGQdYN4oqc:CLIENT_ID" />
+                <input hidden name="clientSecret" value="PpqUtcLGQdYN4oqc:CLIENT_SECRET" />
                 <div class="textarea-shell">
                     <?start name="/chat/prompt"><textarea name="prompt" onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.form?.requestSubmit(); }"></textarea><?end>
                 </div>

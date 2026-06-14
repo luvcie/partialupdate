@@ -92,6 +92,7 @@ Forms can be included in HTML bodies. The server replaces these tokens when send
 
 PpqUtcLGQdYN4oqc:CHAT_ID
 PpqUtcLGQdYN4oqc:CLIENT_ID
+PpqUtcLGQdYN4oqc:CLIENT_SECRET
 PpqUtcLGQdYN4oqc:FORK_ID
 
 Example form:
@@ -101,6 +102,7 @@ PpqUtcLGQdYN4oqc:BODY_START
   <div class="message message-agent" id="message-3">
     <form method="post" action="PpqUtcLGQdYN4oqc:CHAT_ID/form" target="hidden-submit-frame">
       <input hidden name="clientId" value="PpqUtcLGQdYN4oqc:CLIENT_ID" />
+      <input hidden name="clientSecret" value="PpqUtcLGQdYN4oqc:CLIENT_SECRET" />
       <input hidden path="form/name/1" />
       <label>Name</label>
       <input type="text" name="name">
@@ -111,7 +113,7 @@ PpqUtcLGQdYN4oqc:BODY_START
 </template>
 PpqUtcLGQdYN4oqc:BODY_END
 
-Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `PpqUtcLGQdYN4oqc:CHAT_ID/form`. Use a hidden path input so the LLM can make sense of where the input came from.
+Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `PpqUtcLGQdYN4oqc:CHAT_ID/form`. Include hidden `clientId` and `clientSecret` inputs. Use a hidden path input so the LLM can make sense of where the input came from.
 
 You can target JavaScript subscriptions too:
 
@@ -176,6 +178,7 @@ So a body for Tic Tac Toe might be like this:
 
         <form method="post" action="PpqUtcLGQdYN4oqc:CHAT_ID/form" target="hidden-submit-frame">
           <input hidden name="clientId" value="PpqUtcLGQdYN4oqc:CLIENT_ID" />
+          <input hidden name="clientSecret" value="PpqUtcLGQdYN4oqc:CLIENT_SECRET" />
           <input hidden name="path" value="app/tictactoe/1/move" />
           <div class="ttt-grid">
             <?start name="app/ttt/1/html/cell-0">

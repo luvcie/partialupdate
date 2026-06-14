@@ -22,7 +22,7 @@ export type UserWithRole = {
 };
 
 export type RoleGateResult =
-  | { ok: true; role: UserRole | "disabled"; userId?: string }
+  | { ok: true; role: UserRole | "anonymous" | "disabled"; userId?: string }
   | { ok: false; response: Response };
 
 type AuthSession = {
@@ -115,16 +115,20 @@ export async function requireRolePermission(
   const url = new URL(request.url);
 
   if (!session) {
+    if (permission === "viewFork") {
+      return { ok: true, role: "anonymous" };
+    }
+
     return {
       ok: false,
-      response: Response.redirect(new URL("/sign-up", url.origin).toString(), 302),
+      response: Response.redirect(authRedirectUrl(url, "/sign-up"), 302),
     };
   }
 
   if (shouldVerifyEmail(env) && !session.user.emailVerified) {
     return {
       ok: false,
-      response: Response.redirect(new URL("/sign-in", url.origin).toString(), 302),
+      response: Response.redirect(authRedirectUrl(url, "/sign-in"), 302),
     };
   }
 
@@ -144,4 +148,10 @@ export async function requireRolePermission(
   }
 
   return { ok: true, role, userId: session.user.id };
+}
+
+function authRedirectUrl(source: URL, pathname: "/sign-in" | "/sign-up"): string {
+  const redirect = new URL(pathname, source.origin);
+  redirect.searchParams.set("next", source.pathname + source.search);
+  return redirect.toString();
 }

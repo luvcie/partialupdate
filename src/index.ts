@@ -47,10 +47,28 @@ type Update = {
   payload: string;
 };
 
+type ReplayTurn = {
+  prompt: string;
+  updates: Update[];
+};
+
 type ClientUpdate = {
   type: UpdateType;
   path: string;
   payload: string;
+};
+
+type ClientUpdateTurn = {
+  prompt: string;
+  updates: ClientUpdate[];
+};
+
+type ReplayPageOptions = {
+  agentDelay: number;
+  agentDisplay: "block" | "flex" | "grid" | "";
+  agentDuration: number;
+  enabled: boolean;
+  pause: number;
 };
 
 type ClientSession = {
@@ -170,27 +188,29 @@ export class PartialUpdate extends DurableObject<AppEnv> {
   async getInitialPage(
     chatId: string,
     clientSession: ClientSession,
+    replay: ReplayPageOptions = defaultReplayPageOptions(),
   ): Promise<string> {
     const forkId = await this.ensureForkId(chatId);
     this.ensureSystemMessage(clientSession.clientId, chatId);
-    const updates = this.readAssistantUpdates(1000).filter((update) =>
-      shouldSendToClient(update, clientSession.clientId),
-    );
+    const turns = this.readReplayTurns(1000)
+      .map((turn) =>
+        toClientUpdateTurn(
+          turn,
+          chatId,
+          clientSession.clientId,
+          clientSession.clientSecret,
+          forkId,
+        ),
+      )
+      .filter((turn) => turn.updates.length > 0);
 
     return renderAppPage({
       chatId,
       clientId: clientSession.clientId,
       clientSecret: clientSession.clientSecret,
       forkId,
-      history: updates.map((update) =>
-        toClientUpdate(
-          update,
-          chatId,
-          clientSession.clientId,
-          clientSession.clientSecret,
-          forkId,
-        ),
-      ),
+      history: turns,
+      replay,
       title: `PartialUpdate ${chatId}`,
     });
   }
@@ -204,10 +224,19 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     forkId: string,
     clientSession: ClientSession,
     canSubmit = true,
+    replay: ReplayPageOptions = defaultReplayPageOptions(),
   ): Promise<string> {
-    const updates = this.readAssistantUpdates(1000).filter((update) =>
-      shouldSendToClient(update, clientSession.clientId),
-    );
+    const turns = this.readReplayTurns(1000)
+      .map((turn) =>
+        toClientUpdateTurn(
+          turn,
+          forkId,
+          clientSession.clientId,
+          clientSession.clientSecret,
+          forkId,
+        ),
+      )
+      .filter((turn) => turn.updates.length > 0);
 
     return renderAppPage({
       chatId: forkId,
@@ -216,15 +245,8 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       connect: false,
       forkId,
       interceptSubmits: !canSubmit,
-      history: updates.map((update) =>
-        toClientUpdate(
-          update,
-          forkId,
-          clientSession.clientId,
-          clientSession.clientSecret,
-          forkId,
-        ),
-      ),
+      history: turns,
+      replay,
       title: `PartialUpdate fork ${forkId}`,
     });
   }
@@ -663,7 +685,7 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     }));
   }
 
-  private readAssistantUpdates(limit = 100): Update[] {
+  private readReplayTurns(limit = 100): ReplayTurn[] {
     const messages = this.ctx.storage.sql
       .exec(
         `SELECT content
@@ -674,8 +696,43 @@ export class PartialUpdate extends DurableObject<AppEnv> {
         limit,
       )
       .toArray() as Array<{ content: string }>;
+    const llmTurns = this.readLlmReplayPrompts(limit);
 
-    return messages.flatMap((message) => parseAllUpdates(message.content));
+    return messages.map((message, index) => ({
+      prompt: llmTurns[index] ?? "",
+      updates: parseAllUpdates(message.content),
+    }));
+  }
+
+  private readLlmReplayPrompts(limit = 100): string[] {
+    const messages = this.ctx.storage.sql
+      .exec(
+        `SELECT role, content
+				FROM llm_messages
+				WHERE role IN ('user', 'assistant')
+				ORDER BY id ASC`,
+      )
+      .toArray() as Array<{ role: LlmRole; content: string }>;
+    const prompts: string[] = [];
+    let latestUserPrompt = "";
+
+    for (const message of messages) {
+      if (message.role === "user") {
+        latestUserPrompt = promptTextFromLlmUserMessage(message.content);
+        continue;
+      }
+
+      if (message.role === "assistant") {
+        prompts.push(latestUserPrompt);
+        latestUserPrompt = "";
+
+        if (prompts.length >= limit) {
+          break;
+        }
+      }
+    }
+
+    return prompts;
   }
 
   private getNextClientId(): number {
@@ -773,6 +830,7 @@ export default {
     const route = parseRoute(url.pathname);
     const undoCount = parseUndoCount(url.searchParams.get("undo"));
     const hasUndoParam = url.searchParams.has("undo");
+    const replay = parseReplayPageOptions(url.searchParams);
 
     if (request.method === "GET" && route.kind === "home") {
       const gate = await authorize(request, env, "chat");
@@ -819,6 +877,7 @@ export default {
             route.chatId,
             clientSession,
             canBurnTokens(gate.role),
+            replay,
           ),
           {
             headers: htmlHeaders,
@@ -846,7 +905,7 @@ export default {
         url.searchParams.get("clientSecret") || "",
       );
       return new Response(
-        await stub.getInitialPage(route.chatId, clientSession),
+        await stub.getInitialPage(route.chatId, clientSession, replay),
         {
           headers: htmlHeaders,
         },
@@ -1187,6 +1246,59 @@ function normalizeUndoCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 100) : 0;
 }
 
+function defaultReplayPageOptions(): ReplayPageOptions {
+  return {
+    agentDelay: 0,
+    agentDisplay: "",
+    agentDuration: 500,
+    enabled: false,
+    pause: 500,
+  };
+}
+
+function parseReplayPageOptions(params: URLSearchParams): ReplayPageOptions {
+  const replayDelay = parseBoundedInteger(params.get("replay"), 0, 10000, 0);
+  return {
+    agentDelay: parseBoundedInteger(params.get("agentdelay"), 0, 60000, 0),
+    agentDisplay: parseAgentDisplay(params.get("agentdisplay")),
+    agentDuration: parseBoundedInteger(params.get("agentduration"), 0, 60000, 500),
+    enabled:
+      replayDelay > 0 ||
+      params.has("replay") ||
+      params.has("wpm") ||
+      params.has("pause") ||
+      params.has("agentdelay") ||
+      params.has("agentdisplay") ||
+      params.has("agentduration"),
+    pause: parseBoundedInteger(
+      params.get("pause"),
+      0,
+      60000,
+      replayDelay > 0 ? replayDelay : 500,
+    ),
+  };
+}
+
+function parseAgentDisplay(value: string | null): ReplayPageOptions["agentDisplay"] {
+  return value === "block" || value === "flex" || value === "grid" ? value : "";
+}
+
+function parseBoundedInteger(
+  value: string | null,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed)
+    ? Math.min(Math.max(parsed, min), max)
+    : fallback;
+}
+
 function getFormString(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
@@ -1210,7 +1322,8 @@ function renderAppPage(options: {
   forkId: string;
   hidePrompt?: boolean;
   interceptSubmits?: boolean;
-  history: ClientUpdate[];
+  history: ClientUpdateTurn[];
+  replay?: ReplayPageOptions;
   title: string;
 }): string {
   const body = injectPageIds(
@@ -1220,6 +1333,7 @@ function renderAppPage(options: {
     options.clientSecret,
     options.forkId,
   );
+  const replay = options.replay ?? defaultReplayPageOptions();
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1233,12 +1347,44 @@ function renderAppPage(options: {
 		<style>${pageStyles}</style>
 		<style>${appStyles}</style>
 		${options.hidePrompt ? "<style>.prompt { display: none !important; }</style>" : ""}
+		${renderReplayStyle(replay)}
 	</head>
-	<body>
+	<body${replay.enabled ? ' data-replay="true"' : ""}>
 		${body}
-			<script>${renderClientRuntime(options.chatId, options.clientId, options.clientSecret, options.history, options.connect ?? true, options.interceptSubmits ?? false)}</script>
+			<script>${renderClientRuntime(options.chatId, options.clientId, options.clientSecret, options.history, options.connect ?? true, options.interceptSubmits ?? false, replay)}</script>
 	</body>
 </html>`;
+}
+
+function renderReplayStyle(replay: ReplayPageOptions): string {
+  if (!replay.enabled) {
+    return "";
+  }
+
+  if (replay.agentDisplay) {
+    return `<style>
+.partialupdate-replay-agent-display-hidden {
+	display: none !important;
+}
+</style>`;
+  }
+
+  if (replay.agentDelay <= 0) {
+    return "";
+  }
+
+  return `<style>
+@keyframes partialupdateReplayAgentShow {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+body[data-replay] .message-agent {
+	opacity: 0;
+	animation: partialupdateReplayAgentShow 1ms linear forwards;
+	animation-delay: ${replay.agentDelay}ms;
+}
+</style>`;
 }
 
 function renderClientSessionRedirect(chatId: string): string {
@@ -1273,18 +1419,34 @@ function renderClientRuntime(
   chatId: string,
   clientId: string,
   clientSecret: string,
-  history: ClientUpdate[],
+  history: ClientUpdateTurn[],
   connectToSocket: boolean,
   interceptSubmits: boolean,
+  replay: ReplayPageOptions,
 ): string {
   return `
 (() => {
 	const chatId = ${jsonForInlineScript(chatId)};
 	const clientId = ${jsonForInlineScript(clientId)};
 	const clientSecret = ${jsonForInlineScript(clientSecret)};
-	const history = ${jsonForInlineScript(history)};
+	const historyTurns = ${jsonForInlineScript(history)};
 	const connectToSocket = ${jsonForInlineScript(connectToSocket)};
 	const interceptSubmits = ${jsonForInlineScript(interceptSubmits)};
+	const replayConfig = ${jsonForInlineScript(replay)};
+	const replayParams = new URL(window.location.href).searchParams;
+	const replayMode =
+		replayConfig.enabled ||
+		replayParams.has("replay") ||
+		replayParams.has("wpm") ||
+		replayParams.has("pause") ||
+		replayParams.has("agentdelay") ||
+		replayParams.has("agentdisplay") ||
+		replayParams.has("agentduration");
+	const replayWpm = clampNumber(Number.parseFloat(replayParams.get("wpm") || "40"), 1, 400);
+	const replayPause = replayConfig.pause;
+	const replayAgentDelay = replayConfig.agentDelay;
+	const replayAgentDisplay = replayConfig.agentDisplay;
+	const replayAgentDuration = replayConfig.agentDuration;
 	const subscriptions = new Set();
 	let replayingHistory = true;
 	const sessionStorageKey = "partialupdate:chat:" + chatId;
@@ -1302,6 +1464,14 @@ function renderClientRuntime(
 			this.match = match;
 			this.handler = handler;
 		}
+	}
+
+	function clampNumber(value, min, max) {
+		if (!Number.isFinite(value)) {
+			return min;
+		}
+
+		return Math.min(Math.max(value, min), max);
 	}
 
 	const dispatch = (event) => {
@@ -1504,10 +1674,105 @@ function renderClientRuntime(
 		}
 	));
 
-	for (const update of history) {
-		dispatch(update);
-	}
-	replayingHistory = false;
+	const sleep = (delay) => new Promise((resolve) => window.setTimeout(resolve, delay));
+	const nextPaint = () =>
+		new Promise((resolve) => {
+			requestAnimationFrame(() => requestAnimationFrame(resolve));
+		});
+
+	const promptTextarea = () => {
+		const prompt = document.querySelector('textarea[name="prompt"]');
+		return prompt instanceof HTMLTextAreaElement ? prompt : null;
+	};
+
+	const setPromptValue = (value) => {
+		const prompt = promptTextarea();
+
+		if (!prompt) {
+			return;
+		}
+
+		prompt.value = value;
+		prompt.dispatchEvent(new Event("input", { bubbles: true }));
+	};
+
+	const typePromptText = async (text) => {
+		const prompt = promptTextarea();
+
+		if (!prompt || !text) {
+			return;
+		}
+
+		prompt.focus({ preventScroll: true });
+		let value = "";
+		const averageDelay = 60000 / (replayWpm * 4);
+
+		for (const character of text) {
+			value += character;
+			setPromptValue(value);
+			await sleep(averageDelay * (0.4 + Math.random() * 1.2));
+		}
+	};
+
+	const dispatchTurn = (turn) => {
+		const existingAgents = replayAgentDisplay
+			? new Set(document.querySelectorAll(".message-agent"))
+			: null;
+
+		for (const update of turn.updates) {
+			dispatch(update);
+		}
+
+		if (!existingAgents || !replayAgentDisplay) {
+			return;
+		}
+
+		const newAgents = Array.from(document.querySelectorAll(".message-agent"))
+			.filter((agent) => !existingAgents.has(agent));
+
+		for (const agent of newAgents) {
+			agent.classList.add("partialupdate-replay-agent-display-hidden");
+		}
+
+		window.setTimeout(() => {
+			for (const agent of newAgents) {
+				agent.classList.remove("partialupdate-replay-agent-display-hidden");
+				agent.style.display = replayAgentDisplay;
+			}
+		}, replayAgentDelay);
+	};
+
+	const replayHistory = async () => {
+		if (!replayMode) {
+			for (const turn of historyTurns) {
+				for (const update of turn.updates) {
+					dispatch(update);
+				}
+			}
+			return;
+		}
+
+		if (historyTurns.length > 0) {
+			await nextPaint();
+		}
+
+		for (let index = 0; index < historyTurns.length; index += 1) {
+			const turn = historyTurns[index];
+			const userText = turn.prompt || "";
+
+			if (userText) {
+				await typePromptText(userText);
+				await sleep(replayPause);
+				setPromptValue("");
+			}
+
+			dispatchTurn(turn);
+
+			if (index < historyTurns.length - 1) {
+				await sleep(replayAgentDelay + replayAgentDuration);
+			}
+		}
+	};
 
 	let reconnectDelay = 1000;
 	let reconnectTimer = 0;
@@ -1577,9 +1842,13 @@ function renderClientRuntime(
 		}
 	});
 
-	if (connectToSocket) {
-		connect();
-	}
+	replayHistory().finally(() => {
+		replayingHistory = false;
+
+		if (connectToSocket) {
+			connect();
+		}
+	});
 })();`;
 }
 
@@ -1762,6 +2031,17 @@ function lastUserMessage(messages: LlmMessage[]): string {
   }
 
   return "";
+}
+
+function promptTextFromLlmUserMessage(content: string): string {
+  const form = content.match(/^\[form\]:(.*)$/s);
+
+  if (form) {
+    return new URLSearchParams(form[1]).get("prompt") || "";
+  }
+
+  const clientPrompt = content.match(/^\[[^\]]+\]:(.*)$/s);
+  return clientPrompt ? clientPrompt[1] : content;
 }
 
 function formatClientPrompt(clientId: string, prompt: string): string {
@@ -2275,6 +2555,23 @@ function toClientUpdate(
       forkId,
     ),
     type: update.type,
+  };
+}
+
+function toClientUpdateTurn(
+  turn: ReplayTurn,
+  chatId: string,
+  clientId: string,
+  clientSecret: string,
+  forkId: string,
+): ClientUpdateTurn {
+  return {
+    prompt: turn.prompt,
+    updates: turn.updates
+      .filter((update) => shouldSendToClient(update, clientId))
+      .map((update) =>
+        toClientUpdate(update, chatId, clientId, clientSecret, forkId),
+      ),
   };
 }
 

@@ -1362,9 +1362,16 @@ function renderReplayStyle(replay: ReplayPageOptions): string {
   }
 
   if (replay.agentDisplay) {
+    const duration = Math.max(replay.agentDelay, 1);
     return `<style>
-.partialupdate-replay-agent-display-hidden {
-	display: none !important;
+@keyframes partialupdateReplayAgentDisplayShow {
+	0% { display: none; }
+	99.999% { display: none; }
+	100% { display: ${replay.agentDisplay}; }
+}
+
+body[data-replay] .message-agent {
+	animation: partialupdateReplayAgentDisplayShow ${duration}ms step-end forwards;
 }
 </style>`;
   }
@@ -1445,7 +1452,6 @@ function renderClientRuntime(
 	const replayWpm = clampNumber(Number.parseFloat(replayParams.get("wpm") || "40"), 1, 400);
 	const replayPause = replayConfig.pause;
 	const replayAgentDelay = replayConfig.agentDelay;
-	const replayAgentDisplay = replayConfig.agentDisplay;
 	const replayAgentDuration = replayConfig.agentDuration;
 	const subscriptions = new Set();
 	let replayingHistory = true;
@@ -1715,31 +1721,9 @@ function renderClientRuntime(
 	};
 
 	const dispatchTurn = (turn) => {
-		const existingAgents = replayAgentDisplay
-			? new Set(document.querySelectorAll(".message-agent"))
-			: null;
-
 		for (const update of turn.updates) {
 			dispatch(update);
 		}
-
-		if (!existingAgents || !replayAgentDisplay) {
-			return;
-		}
-
-		const newAgents = Array.from(document.querySelectorAll(".message-agent"))
-			.filter((agent) => !existingAgents.has(agent));
-
-		for (const agent of newAgents) {
-			agent.classList.add("partialupdate-replay-agent-display-hidden");
-		}
-
-		window.setTimeout(() => {
-			for (const agent of newAgents) {
-				agent.classList.remove("partialupdate-replay-agent-display-hidden");
-				agent.style.display = replayAgentDisplay;
-			}
-		}, replayAgentDelay);
 	};
 
 	const replayHistory = async () => {

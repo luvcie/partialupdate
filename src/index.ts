@@ -832,6 +832,16 @@ export default {
     const hasUndoParam = url.searchParams.has("undo");
     const replay = parseReplayPageOptions(url.searchParams);
 
+    if (
+      request.method === "GET" &&
+      route.kind !== "home" &&
+      route.kind !== "unknown" &&
+      route.legacy &&
+      route.kind !== "socket"
+    ) {
+      return Response.redirect(canonicalChatUrl(url, route).toString(), 308);
+    }
+
     if (request.method === "GET" && route.kind === "home") {
       const gate = await authorize(request, env, "chat");
 
@@ -840,7 +850,7 @@ export default {
       }
 
       return Response.redirect(
-        new URL(`/${newChatId()}`, url.origin).toString(),
+        new URL(chatPath(newChatId()), url.origin).toString(),
         302,
       );
     }
@@ -866,7 +876,10 @@ export default {
               "",
             );
           }
-          return Response.redirect(new URL(`/${route.chatId}`, url.origin).toString(), 303);
+          return Response.redirect(
+            new URL(chatPath(route.chatId), url.origin).toString(),
+            303,
+          );
         }
 
         const clientSession = newForkClientSession();
@@ -897,7 +910,10 @@ export default {
         if (undoCount > 0) {
           await stub.hardUndo(undoCount, "");
         }
-        return Response.redirect(new URL(`/${route.chatId}`, url.origin).toString(), 303);
+        return Response.redirect(
+          new URL(chatPath(route.chatId), url.origin).toString(),
+          303,
+        );
       }
 
       const clientSession = await stub.issueClientSession(
@@ -922,7 +938,7 @@ export default {
       const forkId = await env.PARTIAL_UPDATE.getByName(
         route.chatId,
       ).getForkId(route.chatId);
-      return Response.redirect(new URL(`/${forkId}`, url.origin).toString(), 302);
+      return Response.redirect(new URL(chatPath(forkId), url.origin).toString(), 302);
     }
 
     if (request.method === "GET" && route.kind === "socket") {
@@ -1005,7 +1021,7 @@ export default {
           newChatId,
         );
 
-        return renderParentRedirect(new URL(`/${newChatId}`, url.origin));
+        return renderParentRedirect(new URL(chatPath(newChatId), url.origin));
       }
 
       const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
@@ -1049,7 +1065,7 @@ export default {
           newChatId,
         );
 
-        return renderParentRedirect(new URL(`/${newChatId}`, url.origin));
+        return renderParentRedirect(new URL(chatPath(newChatId), url.origin));
       }
 
       const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
@@ -1075,7 +1091,7 @@ export default {
 
       await env.PARTIAL_UPDATE.getByName(route.chatId).clearHistory();
       return Response.redirect(
-        new URL(`/${route.chatId}/debug`, url.origin).toString(),
+        new URL(chatPath(route.chatId, "debug"), url.origin).toString(),
         303,
       );
     }
@@ -1146,17 +1162,61 @@ function renderParentRedirect(url: URL): Response {
   );
 }
 
+function canonicalChatUrl(
+  url: URL,
+  route:
+    | { kind: "chat"; chatId: string }
+    | { kind: "fork"; chatId: string }
+    | { kind: "socket"; chatId: string }
+    | { kind: "debug"; chatId: string }
+    | { kind: "debugClear"; chatId: string }
+    | { kind: "prompt"; chatId: string }
+    | { kind: "form"; chatId: string },
+): URL {
+  const canonical = new URL(canonicalChatPath(route), url.origin);
+  canonical.search = url.search;
+  return canonical;
+}
+
+function canonicalChatPath(
+  route:
+    | { kind: "chat"; chatId: string }
+    | { kind: "fork"; chatId: string }
+    | { kind: "socket"; chatId: string }
+    | { kind: "debug"; chatId: string }
+    | { kind: "debugClear"; chatId: string }
+    | { kind: "prompt"; chatId: string }
+    | { kind: "form"; chatId: string },
+): string {
+  switch (route.kind) {
+    case "chat":
+      return chatPath(route.chatId);
+    case "fork":
+      return chatPath(route.chatId, "fork");
+    case "socket":
+      return chatPath(route.chatId, "socket");
+    case "debug":
+      return chatPath(route.chatId, "debug");
+    case "debugClear":
+      return chatPath(route.chatId, "debug", "clear");
+    case "prompt":
+      return chatPath(route.chatId, "prompt");
+    case "form":
+      return chatPath(route.chatId, "form");
+  }
+}
+
 function parseRoute(
   pathname: string,
 ):
   | { kind: "home" }
-  | { kind: "chat"; chatId: string }
-  | { kind: "fork"; chatId: string }
-  | { kind: "socket"; chatId: string }
-  | { kind: "debug"; chatId: string }
-  | { kind: "debugClear"; chatId: string }
-  | { kind: "prompt"; chatId: string }
-  | { kind: "form"; chatId: string }
+  | { kind: "chat"; chatId: string; legacy: boolean }
+  | { kind: "fork"; chatId: string; legacy: boolean }
+  | { kind: "socket"; chatId: string; legacy: boolean }
+  | { kind: "debug"; chatId: string; legacy: boolean }
+  | { kind: "debugClear"; chatId: string; legacy: boolean }
+  | { kind: "prompt"; chatId: string; legacy: boolean }
+  | { kind: "form"; chatId: string; legacy: boolean }
   | { kind: "unknown" } {
   const parts = pathname.split("/").filter(Boolean);
 
@@ -1164,20 +1224,39 @@ function parseRoute(
     return { kind: "home" };
   }
 
+  if (parts[0] === "c") {
+    return parseChatRoute(parts.slice(1), false);
+  }
+
+  return parseChatRoute(parts, true);
+}
+
+function parseChatRoute(
+  parts: string[],
+  legacy: boolean,
+):
+  | { kind: "chat"; chatId: string; legacy: boolean }
+  | { kind: "fork"; chatId: string; legacy: boolean }
+  | { kind: "socket"; chatId: string; legacy: boolean }
+  | { kind: "debug"; chatId: string; legacy: boolean }
+  | { kind: "debugClear"; chatId: string; legacy: boolean }
+  | { kind: "prompt"; chatId: string; legacy: boolean }
+  | { kind: "form"; chatId: string; legacy: boolean }
+  | { kind: "unknown" } {
   if (parts.length === 1 && isSafeId(parts[0])) {
-    return { kind: "chat", chatId: parts[0] };
+    return { kind: "chat", chatId: parts[0], legacy };
   }
 
   if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "fork") {
-    return { kind: "fork", chatId: parts[0] };
+    return { kind: "fork", chatId: parts[0], legacy };
   }
 
   if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "socket") {
-    return { kind: "socket", chatId: parts[0] };
+    return { kind: "socket", chatId: parts[0], legacy };
   }
 
   if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "debug") {
-    return { kind: "debug", chatId: parts[0] };
+    return { kind: "debug", chatId: parts[0], legacy };
   }
 
   if (
@@ -1186,18 +1265,23 @@ function parseRoute(
     parts[1] === "debug" &&
     parts[2] === "clear"
   ) {
-    return { kind: "debugClear", chatId: parts[0] };
+    return { kind: "debugClear", chatId: parts[0], legacy };
   }
 
   if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "prompt") {
-    return { kind: "prompt", chatId: parts[0] };
+    return { kind: "prompt", chatId: parts[0], legacy };
   }
 
   if (parts.length === 2 && isSafeId(parts[0]) && parts[1] === "form") {
-    return { kind: "form", chatId: parts[0] };
+    return { kind: "form", chatId: parts[0], legacy };
   }
 
   return { kind: "unknown" };
+}
+
+function chatPath(chatId: string, ...parts: string[]): string {
+  const encoded = [chatId, ...parts].map((part) => encodeURIComponent(part));
+  return `/c/${encoded.join("/")}`;
 }
 
 function isSafeId(value: string): boolean {
@@ -1784,7 +1868,7 @@ function renderClientRuntime(
 			return;
 		}
 
-		const url = new URL("/" + encodeURIComponent(chatId) + "/socket", window.location.href);
+		const url = new URL("/c/" + encodeURIComponent(chatId) + "/socket", window.location.href);
 		url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 		url.searchParams.set("clientId", clientId);
 		url.searchParams.set("clientSecret", clientSecret);

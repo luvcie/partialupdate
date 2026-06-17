@@ -40,8 +40,8 @@ const htmlHeaders = {
 
 export function renderDebugPage(url: URL, state: DebugState): Response {
   const mode = readDebugMode(url);
-  const chatHref = new URL(`/${state.objectId}`, url.origin).toString();
-  const clearAction = `/${state.objectId}/debug/clear`;
+  const chatHref = new URL(chatPath(state.objectId), url.origin).toString();
+  const clearAction = chatPath(state.objectId, "debug", "clear");
   const rawHref = debugModeHref(url, "raw");
   const prettyHref = debugModeHref(url, "pretty");
 
@@ -80,6 +80,11 @@ export function renderDebugPage(url: URL, state: DebugState): Response {
 
 function readDebugMode(url: URL): DebugMode {
   return url.searchParams.get("mode") === "pretty" ? "pretty" : "raw";
+}
+
+function chatPath(chatId: string, ...parts: string[]): string {
+  const encoded = [chatId, ...parts].map((part) => encodeURIComponent(part));
+  return `/c/${encoded.join("/")}`;
 }
 
 function debugModeHref(url: URL, mode: DebugMode): string {

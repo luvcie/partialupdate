@@ -100,7 +100,7 @@ Example form:
 PpqUtcLGQdYN4oqc:BODY_START
 <template for="/chat/append-message">
   <div class="message message-agent" id="message-3">
-    <form method="post" action="PpqUtcLGQdYN4oqc:CHAT_ID/form" target="hidden-submit-frame">
+    <form method="post" action="c/PpqUtcLGQdYN4oqc:CHAT_ID/form" target="hidden-submit-frame">
       <input hidden name="clientId" value="PpqUtcLGQdYN4oqc:CLIENT_ID" />
       <input hidden name="clientSecret" value="PpqUtcLGQdYN4oqc:CLIENT_SECRET" />
       <input hidden path="form/name/1" />
@@ -113,7 +113,7 @@ PpqUtcLGQdYN4oqc:BODY_START
 </template>
 PpqUtcLGQdYN4oqc:BODY_END
 
-Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `PpqUtcLGQdYN4oqc:CHAT_ID/form`. Include hidden `clientId` and `clientSecret` inputs. Use a hidden path input so the LLM can make sense of where the input came from.
+Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `c/PpqUtcLGQdYN4oqc:CHAT_ID/form`. Include hidden `clientId` and `clientSecret` inputs. Use a hidden path input so the LLM can make sense of where the input came from.
 
 You can target JavaScript subscriptions too:
 

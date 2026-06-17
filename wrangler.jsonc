@@ -10,6 +10,11 @@
     "VERIFY_EMAIL": false,
     // "MODEL_PROVIDER": "gemini-direct",
     // "GEMINI_MODEL": "gemini-3.5-flash",
+    // "MODEL_PROVIDER": "inception-direct",
+    // "INCEPTION_MODEL": "mercury-2",
+    // "INCEPTION_REASONING_EFFORT": "medium",
+    // "INCEPTION_TEMPERATURE": 0.75,
+    // "INCEPTION_MAX_TOKENS": 8192,
     // Local secrets can go in .dev.vars.
     // Set AUTH_PROVIDERS and BETTER_AUTH_SECRET to enable authentication.
     // Deployed secrets should be set per environment:

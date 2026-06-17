@@ -1858,6 +1858,11 @@ async function* streamModelResponse(
     return;
   }
 
+  if (provider === "inception-direct" && env.INCEPTION_API_KEY) {
+    yield* streamInceptionResponse(env, messages);
+    return;
+  }
+
   if (provider === "workers-ai" && env.AI) {
     yield* streamWorkersAiResponse(env, messages);
     return;
@@ -2007,6 +2012,51 @@ async function* streamGeminiResponse(
   yield* parseSseTextStream(response.body);
 }
 
+async function* streamInceptionResponse(
+  env: AppEnv,
+  messages: LlmMessage[],
+): AsyncIterable<string> {
+  const model = env.INCEPTION_MODEL || "mercury-2";
+  const response = await fetch(
+    "https://api.inceptionlabs.ai/v1/chat/completions",
+    {
+      body: JSON.stringify({
+        messages: gatewayChatMessagesFromMessages(messages),
+        model,
+        reasoning_effort: env.INCEPTION_REASONING_EFFORT || "medium",
+        temperature: numberEnv(env.INCEPTION_TEMPERATURE, 0.75),
+        max_tokens: numberEnv(env.INCEPTION_MAX_TOKENS, 8192),
+      }),
+      headers: {
+        Authorization: `Bearer ${env.INCEPTION_API_KEY || ""}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    },
+  );
+
+  if (!response.ok || !response.body) {
+    console.warn("Inception direct did not return a response", {
+      model,
+      status: response.status,
+      statusText: response.statusText,
+      body: await response.text().catch(() => ""),
+    });
+    yield fallbackUpdate(lastUserMessage(messages), "");
+    return;
+  }
+
+  const contentType = response.headers.get("Content-Type") || "";
+
+  if (contentType.includes("text/event-stream")) {
+    yield* parseSseTextStream(response.body);
+    return;
+  }
+
+  yield extractTextFromPayload(await response.json().catch(() => undefined)) ||
+    fallbackUpdate(lastUserMessage(messages), "");
+}
+
 function lastUserMessage(messages: LlmMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
@@ -2072,6 +2122,22 @@ function parseGatewayModelSettings(
   }
 
   return settings;
+}
+
+function numberEnv(value: number | string | undefined, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return fallback;
 }
 
 async function* parseSseTextStream(
@@ -2582,7 +2648,7 @@ function fallbackUpdate(prompt: string, fallbackClientId: string): string {
     payload: `<template for="/chat/append-message">
 	<?start name="/chat/append-message">
 		<div class="message message-user" data-client-id="${escapeAttribute(id)}">${escapeHtml(text)}</div>
-		<div class="message message-agent">I received your message, but the configured model provider did not return a stream. Check the Cloudflare Gateway, Workers AI, or Gemini direct settings.</div>
+		<div class="message message-agent">I received your message, but the configured model provider did not return a response. Check the Cloudflare Gateway, Workers AI, Gemini direct, or Inception direct settings.</div>
 	<?marker name="/chat/append-message">
 </template>`,
     type: "html",

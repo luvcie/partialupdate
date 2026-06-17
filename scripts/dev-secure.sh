@@ -41,11 +41,13 @@ append_keychain_value CLOUDFLARE_API_TOKEN
 append_keychain_value CLOUDFLARE_AI_GATEWAY_ID
 append_keychain_value CLOUDFLARE_ACCOUNT_ID
 append_keychain_value GEMINI_API_KEY
+append_keychain_value INCEPTION_API_KEY
 append_keychain_value BETTER_AUTH_SECRET
 append_keychain_value GITHUB_CLIENT_ID
 append_keychain_value GITHUB_CLIENT_SECRET
 append_keychain_value GOOGLE_CLIENT_ID
 append_keychain_value GOOGLE_CLIENT_SECRET
+append_keychain_value INCEPTION_API_KEY
 
 chmod 600 "$env_file"
 

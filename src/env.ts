@@ -11,6 +11,11 @@ export type AppEnv = Env & {
   CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS?: Record<string, unknown> | string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
+  INCEPTION_API_KEY?: string;
+  INCEPTION_MAX_TOKENS?: number | string;
+  INCEPTION_MODEL?: string;
+  INCEPTION_REASONING_EFFORT?: string;
+  INCEPTION_TEMPERATURE?: number | string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -18,7 +23,11 @@ export type AppEnv = Env & {
   EMAIL?: SendEmail;
   EMAIL_FROM?: string;
   EMAIL_FROM_NAME?: string;
-  MODEL_PROVIDER?: "cloudflare-gateway" | "workers-ai" | "gemini-direct";
+  MODEL_PROVIDER?:
+    | "cloudflare-gateway"
+    | "workers-ai"
+    | "gemini-direct"
+    | "inception-direct";
   VERIFY_EMAIL?: boolean | string;
   WORKERS_AI_MODEL?: string;
 };

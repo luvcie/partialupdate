@@ -7,7 +7,7 @@
 		"deploy:alpha:bootstrap": "wrangler deploy --env alpha --secrets-file .secrets.alpha",
 		"deploy:production": "wrangler deploy --env production",
 		"deploy:production:bootstrap": "wrangler deploy --env production --secrets-file .secrets.production",
-		"dev": "wrangler dev",
+		"dev": "wrangler dev --ip 0.0.0.0",
 		"dev:alpha": "wrangler dev --env alpha",
 		"dev:production": "wrangler dev --env production",
 		"dev:secure": "bash scripts/dev-secure.sh",
@@ -15,7 +15,7 @@
 		"db:migrate:alpha": "wrangler d1 migrations apply partialupdate-auth-alpha --env alpha --remote",
 		"db:migrate:local": "wrangler d1 migrations apply partialupdate-auth-local --local",
 		"db:migrate:production": "wrangler d1 migrations apply partialupdate-auth-production --env production --remote",
-		"start": "wrangler dev",
+		"start": "wrangler dev --ip 0.0.0.0",
 		"cf-typegen": "wrangler types",
 		"cf-typegen:alpha": "wrangler types --env alpha",
 		"cf-typegen:production": "wrangler types --env production"

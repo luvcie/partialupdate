@@ -51,4 +51,4 @@ append_keychain_value INCEPTION_API_KEY
 
 chmod 600 "$env_file"
 
-exec wrangler dev --local --env-file "$env_file" "$@"
+exec wrangler dev --local --ip 0.0.0.0 --env-file "$env_file" "$@"

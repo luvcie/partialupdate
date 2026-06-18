@@ -76,6 +76,53 @@ type ClientSession = {
   clientSecret: string;
 };
 
+type LlmQueueItem = {
+  id: string;
+  clientId: string;
+  prompt: string;
+  createdAt: number;
+  rateLimitPermits: RateLimitPermit[];
+};
+
+type LlmQueueState = {
+  active?: LlmQueueItem;
+  activeStartedAt?: number;
+  items: LlmQueueItem[];
+};
+
+type SubmitResult =
+  | { kind: "accepted" }
+  | { kind: "empty" }
+  | { kind: "queueFull"; message: string };
+
+type RateLimitScope = "browser" | "ip";
+type RateLimitAction = "newChat" | "prompt";
+
+type RateLimitPermit = {
+  objectName: string;
+  permitId: string;
+};
+
+type RateLimitDecision =
+  | { allowed: true; permitId?: string }
+  | { allowed: false; retryAfter: number };
+
+type RateLimitState = {
+  active: Array<{ id: string; expiresAt: number }>;
+  newChats: number[];
+  prompts: number[];
+};
+
+type PromptAdmission =
+  | { allowed: true; permits: RateLimitPermit[] }
+  | { allowed: false; retryAfter: number };
+
+type RateLimitContext = {
+  browserObjectName?: string;
+  ipObjectName?: string;
+  setCookie?: string;
+};
+
 type WebSocketAttachment = {
 	clientId: string;
 	clientSecret: string;
@@ -107,8 +154,27 @@ const CLIENT_SECRET_TOKEN = `${PROTOCOL_PREFIX}:CLIENT_SECRET`;
 const CHAT_ID_TOKEN = `${PROTOCOL_PREFIX}:CHAT_ID`;
 const FORK_ID_TOKEN = `${PROTOCOL_PREFIX}:FORK_ID`;
 const FORK_INDEX_OBJECT = "__fork_index";
+const LLM_QUEUE_KEY = "llmQueue";
+const LLM_QUEUE_LIMIT = 5;
+const LLM_QUEUE_ACTIVE_STALE_MS = 5 * 60 * 1000;
+const PROMPT_MAX_CHARACTERS_DEFAULT = 3000;
+const RATE_LIMIT_COOKIE_NAME = "partialupdate_browser";
+const RATE_LIMIT_COOKIE_SECRET_KEY = "rateLimitCookieSecret";
+const RATE_LIMIT_STATE_KEY = "rateLimitState";
+const RATE_LIMIT_PERMIT_EXPIRY_MS = 5 * 60 * 1000;
+const IP_MAX_ACTIVE_LLM_REQUESTS = 20;
+const IP_MAX_PROMPTS_PER_MINUTE = 60;
+const IP_MAX_PROMPTS_PER_HOUR = 300;
+const IP_MAX_NEW_CHATS_PER_HOUR = 100;
+const BROWSER_MAX_ACTIVE_LLM_REQUESTS = 2;
+const BROWSER_MAX_PROMPTS_PER_MINUTE = 10;
+const BROWSER_MAX_PROMPTS_PER_HOUR = 60;
+const BROWSER_MAX_NEW_CHATS_PER_HOUR = 15;
 
 export class PartialUpdate extends DurableObject<AppEnv> {
+  private llmDrainRunning = false;
+  private queueMutation: Promise<void> = Promise.resolve();
+
   constructor(ctx: DurableObjectState, env: AppEnv) {
     super(ctx, env);
     this.ensureSchema();
@@ -387,31 +453,56 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     clientId: string,
     prompt: string,
     chatId = "chat",
-  ): Promise<void> {
+    rateLimitPermits: RateLimitPermit[] = [],
+  ): Promise<SubmitResult> {
     const normalizedPrompt = prompt.trim();
 
     if (!normalizedPrompt) {
-      return;
+      return { kind: "empty" };
+    }
+
+    const queued = await this.enqueueLlmRequest(
+      clientId,
+      normalizedPrompt,
+      rateLimitPermits,
+    );
+
+    if (!queued) {
+      return { kind: "queueFull", message: normalizedPrompt };
     }
 
     await this.addMessage("user", clientId, normalizedPrompt);
-    await this.runModel(clientId, chatId, normalizedPrompt);
+    this.ctx.waitUntil(this.drainLlmQueue(chatId));
+    return { kind: "accepted" };
   }
 
   async submitForm(
     clientId: string,
     fields: Record<string, string>,
     chatId = "chat",
-  ): Promise<void> {
+    rateLimitPermits: RateLimitPermit[] = [],
+  ): Promise<SubmitResult> {
     const description = fields.description?.trim() || "form submission";
     const fieldText = Object.entries(fields)
       .filter(([key]) => key !== "clientId" && key !== "clientSecret")
       .map(([key, value]) => `${key}: ${value}`)
       .join("\n");
     const prompt = `${clientId}: ${description}\n${fieldText}`.trim();
+    const modelPrompt = formatFormPrompt(fields);
+
+    const queued = await this.enqueueLlmRequest(
+      clientId,
+      modelPrompt,
+      rateLimitPermits,
+    );
+
+    if (!queued) {
+      return { kind: "queueFull", message: prompt };
+    }
 
     await this.addMessage("form", clientId, prompt);
-    await this.runModel(clientId, chatId, formatFormPrompt(fields));
+    this.ctx.waitUntil(this.drainLlmQueue(chatId));
+    return { kind: "accepted" };
   }
 
   async webSocketMessage(
@@ -434,6 +525,288 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
   async webSocketError(ws: WebSocket): Promise<void> {
     ws.close(1011, "WebSocket error");
+  }
+
+  async acquireRateLimit(
+    scope: RateLimitScope,
+    action: RateLimitAction,
+  ): Promise<RateLimitDecision> {
+    return this.withQueueMutation(async () => {
+      const now = Date.now();
+      const hourAgo = now - 60 * 60 * 1000;
+      const minuteAgo = now - 60 * 1000;
+      const limits = rateLimitsForScope(scope);
+      const stored =
+        (await this.ctx.storage.get<RateLimitState>(RATE_LIMIT_STATE_KEY)) ??
+        emptyRateLimitState();
+      const state: RateLimitState = {
+        active: stored.active.filter((permit) => permit.expiresAt > now),
+        newChats: stored.newChats.filter((timestamp) => timestamp > hourAgo),
+        prompts: stored.prompts.filter((timestamp) => timestamp > hourAgo),
+      };
+
+      if (action === "newChat") {
+        if (state.newChats.length >= limits.newChatsPerHour) {
+          await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+          return {
+            allowed: false,
+            retryAfter: retryAfterSeconds(state.newChats[0], hourAgo),
+          };
+        }
+
+        state.newChats.push(now);
+        await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+        return { allowed: true };
+      }
+
+      const promptsLastMinute = state.prompts.filter(
+        (timestamp) => timestamp > minuteAgo,
+      );
+
+      if (state.active.length >= limits.active) {
+        await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+        return {
+          allowed: false,
+          retryAfter: retryAfterSeconds(
+            Math.min(...state.active.map((permit) => permit.expiresAt)),
+            now,
+          ),
+        };
+      }
+
+      if (promptsLastMinute.length >= limits.promptsPerMinute) {
+        await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+        return {
+          allowed: false,
+          retryAfter: retryAfterSeconds(promptsLastMinute[0], minuteAgo),
+        };
+      }
+
+      if (state.prompts.length >= limits.promptsPerHour) {
+        await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+        return {
+          allowed: false,
+          retryAfter: retryAfterSeconds(state.prompts[0], hourAgo),
+        };
+      }
+
+      const permitId = crypto.randomUUID();
+      state.active.push({
+        id: permitId,
+        expiresAt: now + RATE_LIMIT_PERMIT_EXPIRY_MS,
+      });
+      state.prompts.push(now);
+      await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+      return { allowed: true, permitId };
+    });
+  }
+
+  async releaseRateLimitPermit(permitId: string): Promise<void> {
+    await this.withQueueMutation(async () => {
+      const state = await this.ctx.storage.get<RateLimitState>(
+        RATE_LIMIT_STATE_KEY,
+      );
+
+      if (!state) {
+        return;
+      }
+
+      state.active = state.active.filter((permit) => permit.id !== permitId);
+      await this.ctx.storage.put(RATE_LIMIT_STATE_KEY, state);
+    });
+  }
+
+  async resolveBrowserRateLimitIdentity(
+    cookieValue: string,
+    issueCookie: boolean,
+  ): Promise<{ browserId?: string; signedCookie?: string }> {
+    let secret = await this.ctx.storage.get<string>(
+      RATE_LIMIT_COOKIE_SECRET_KEY,
+    );
+
+    if (!secret) {
+      secret = crypto.randomUUID();
+      await this.ctx.storage.put(RATE_LIMIT_COOKIE_SECRET_KEY, secret);
+    }
+
+    const browserId = cookieValue
+      ? await verifyBrowserRateLimitCookie(cookieValue, secret)
+      : undefined;
+
+    if (browserId || !issueCookie) {
+      return { browserId };
+    }
+
+    const issuedBrowserId = crypto.randomUUID();
+    return {
+      browserId: issuedBrowserId,
+      signedCookie: await signBrowserRateLimitCookie(issuedBrowserId, secret),
+    };
+  }
+
+  private async enqueueLlmRequest(
+    clientId: string,
+    prompt: string,
+    rateLimitPermits: RateLimitPermit[],
+  ): Promise<boolean> {
+    return this.withQueueMutation(async () => {
+      const queue = await this.readLlmQueue();
+      const normalized = this.recoverStaleLlmQueueActive(queue);
+      const queueSize = normalized.items.length + (normalized.active ? 1 : 0);
+
+      if (queueSize >= LLM_QUEUE_LIMIT) {
+        if (normalized !== queue) {
+          await this.writeLlmQueue(normalized);
+        }
+        return false;
+      }
+
+      normalized.items.push({
+        id: crypto.randomUUID(),
+        clientId,
+        prompt,
+        createdAt: Date.now(),
+        rateLimitPermits,
+      });
+      await this.writeLlmQueue(normalized);
+      return true;
+    });
+  }
+
+  private async drainLlmQueue(chatId: string): Promise<void> {
+    if (this.llmDrainRunning) {
+      return;
+    }
+
+    this.llmDrainRunning = true;
+
+    try {
+      while (true) {
+        const next = await this.claimNextLlmRequest();
+
+        if (!next) {
+          return;
+        }
+
+        try {
+          await this.runModel(next.clientId, chatId, next.prompt);
+        } catch (error) {
+          console.error("LLM queue item failed", {
+            chatId,
+            error: error instanceof Error ? error.message : String(error),
+            itemId: next.id,
+          });
+        } finally {
+          await this.finishLlmRequest(next.id);
+          await this.releaseRateLimitPermits(next.rateLimitPermits);
+        }
+      }
+    } finally {
+      this.llmDrainRunning = false;
+    }
+  }
+
+  private async claimNextLlmRequest(): Promise<LlmQueueItem | undefined> {
+    return this.withQueueMutation(async () => {
+      const queue = this.recoverStaleLlmQueueActive(await this.readLlmQueue());
+
+      if (queue.active) {
+        await this.writeLlmQueue(queue);
+        return undefined;
+      }
+
+      const next = queue.items.shift();
+
+      if (!next) {
+        await this.writeLlmQueue(queue);
+        return undefined;
+      }
+
+      queue.active = next;
+      queue.activeStartedAt = Date.now();
+      await this.writeLlmQueue(queue);
+      return next;
+    });
+  }
+
+  private async finishLlmRequest(itemId: string): Promise<void> {
+    await this.withQueueMutation(async () => {
+      const queue = await this.readLlmQueue();
+
+      if (queue.active?.id === itemId) {
+        queue.active = undefined;
+        queue.activeStartedAt = undefined;
+      }
+
+      await this.writeLlmQueue(queue);
+    });
+  }
+
+  private recoverStaleLlmQueueActive(queue: LlmQueueState): LlmQueueState {
+    if (
+      queue.active &&
+      queue.activeStartedAt &&
+      Date.now() - queue.activeStartedAt > LLM_QUEUE_ACTIVE_STALE_MS
+    ) {
+      return {
+        items: queue.items,
+      };
+    }
+
+    return queue;
+  }
+
+  private async readLlmQueue(): Promise<LlmQueueState> {
+    const queue = await this.ctx.storage.get<LlmQueueState>(LLM_QUEUE_KEY);
+
+    if (!queue || !Array.isArray(queue.items)) {
+      return { items: [] };
+    }
+
+    return {
+      active: queue.active
+        ? {
+            ...queue.active,
+            rateLimitPermits: queue.active.rateLimitPermits ?? [],
+          }
+        : undefined,
+      activeStartedAt: queue.activeStartedAt,
+      items: queue.items.map((item) => ({
+        ...item,
+        rateLimitPermits: item.rateLimitPermits ?? [],
+      })),
+    };
+  }
+
+  private async writeLlmQueue(queue: LlmQueueState): Promise<void> {
+    await this.ctx.storage.put(LLM_QUEUE_KEY, queue);
+  }
+
+  private async releaseRateLimitPermits(
+    permits: RateLimitPermit[],
+  ): Promise<void> {
+    await Promise.all(
+      permits.map((permit) =>
+        this.env.PARTIAL_UPDATE.getByName(permit.objectName)
+          .releaseRateLimitPermit(permit.permitId),
+      ),
+    );
+  }
+
+  private async withQueueMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.queueMutation;
+    let release = () => {};
+    this.queueMutation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   private ensureSchema(): void {
@@ -849,10 +1222,24 @@ export default {
         return gate.response;
       }
 
-      return Response.redirect(
+      const rateLimitContext = await resolveRateLimitContext(
+        request,
+        env,
+        true,
+      );
+      const admission = await acquireNewChatAdmission(env, rateLimitContext);
+
+      if (!admission.allowed) {
+        return withRateLimitCookie(
+          rateLimitResponse(admission.retryAfter),
+          rateLimitContext.setCookie,
+        );
+      }
+
+      return withRateLimitCookie(Response.redirect(
         new URL(chatPath(newChatId()), url.origin).toString(),
         302,
-      );
+      ), rateLimitContext.setCookie);
     }
 
     if (request.method === "GET" && route.kind === "chat") {
@@ -884,7 +1271,12 @@ export default {
 
         const clientSession = newForkClientSession();
         const stub = env.PARTIAL_UPDATE.getByName(forkSourceChatId);
-        return new Response(
+        const rateLimitContext = await resolveRateLimitContext(
+          request,
+          env,
+          true,
+        );
+        return withRateLimitCookie(new Response(
           await stub.getReadOnlyForkPage(
             forkSourceChatId,
             route.chatId,
@@ -895,7 +1287,7 @@ export default {
           {
             headers: htmlHeaders,
           },
-        );
+        ), rateLimitContext.setCookie);
       }
 
       const gate = await authorize(request, env, "chat");
@@ -920,12 +1312,17 @@ export default {
         url.searchParams.get("clientId") || "",
         url.searchParams.get("clientSecret") || "",
       );
-      return new Response(
+      const rateLimitContext = await resolveRateLimitContext(
+        request,
+        env,
+        true,
+      );
+      return withRateLimitCookie(new Response(
         await stub.getInitialPage(route.chatId, clientSession, replay),
         {
           headers: htmlHeaders,
         },
-      );
+      ), rateLimitContext.setCookie);
     }
 
     if (request.method === "GET" && route.kind === "fork") {
@@ -1006,36 +1403,78 @@ export default {
         return gate.response;
       }
 
+      if (characterCount(prompt) > promptMaxCharacters(env)) {
+        return renderClientOnlySystemMessage("Prompt too long.", 413);
+      }
+
       const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
+      const stub = forkSourceChatId
+        ? undefined
+        : env.PARTIAL_UPDATE.getByName(route.chatId);
+
+      if (
+        stub &&
+        !(await stub.validateClientSession(clientId, clientSecret))
+      ) {
+        return new Response("Invalid client session", { status: 403 });
+      }
+
+      const rateLimitContext = await resolveRateLimitContext(
+        request,
+        env,
+        false,
+      );
+      const promptAdmission = await acquirePromptAdmission(
+        env,
+        rateLimitContext,
+      );
+
+      if (!promptAdmission.allowed) {
+        return renderRateLimitSystemMessage(promptAdmission.retryAfter);
+      }
 
       if (forkSourceChatId) {
+        const newChatAdmission = await acquireNewChatAdmission(
+          env,
+          rateLimitContext,
+        );
+
+        if (!newChatAdmission.allowed) {
+          await releaseRateLimitPermits(env, promptAdmission.permits);
+          return renderRateLimitSystemMessage(newChatAdmission.retryAfter);
+        }
+
         const newChatId = await createForkedChat(env, {
           clientId,
           sourceChatId: forkSourceChatId,
         });
         const newStub = env.PARTIAL_UPDATE.getByName(newChatId);
 
-        await newStub.submitPrompt(
+        const submitResult = await newStub.submitPrompt(
           clientId,
           prompt,
           newChatId,
+          promptAdmission.permits,
         );
+
+        if (submitResult.kind === "queueFull") {
+          await releaseRateLimitPermits(env, promptAdmission.permits);
+          return renderClientOnlyQueueFullMessage(submitResult.message);
+        }
 
         return renderParentRedirect(new URL(chatPath(newChatId), url.origin));
       }
 
-      const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
-
-      if (!(await stub.validateClientSession(clientId, clientSecret))) {
-        return new Response("Invalid client session", { status: 403 });
-      }
-
-      await stub.submitPrompt(
+      const submitResult = await stub!.submitPrompt(
         clientId,
         prompt,
         route.chatId,
+        promptAdmission.permits,
       );
-      return new Response(null, { status: 204 });
+      if (submitResult.kind === "queueFull") {
+        await releaseRateLimitPermits(env, promptAdmission.permits);
+      }
+      return renderSubmitResult(submitResult);
     }
 
     if (request.method === "POST" && route.kind === "form") {
@@ -1051,35 +1490,73 @@ export default {
       }
 
       const forkSourceChatId = await lookupForkSourceChatId(env, route.chatId);
+      const stub = forkSourceChatId
+        ? undefined
+        : env.PARTIAL_UPDATE.getByName(route.chatId);
+
+      if (
+        stub &&
+        !(await stub.validateClientSession(clientId, clientSecret))
+      ) {
+        return new Response("Invalid client session", { status: 403 });
+      }
+
+      const rateLimitContext = await resolveRateLimitContext(
+        request,
+        env,
+        false,
+      );
+      const promptAdmission = await acquirePromptAdmission(
+        env,
+        rateLimitContext,
+      );
+
+      if (!promptAdmission.allowed) {
+        return renderRateLimitSystemMessage(promptAdmission.retryAfter);
+      }
 
       if (forkSourceChatId) {
+        const newChatAdmission = await acquireNewChatAdmission(
+          env,
+          rateLimitContext,
+        );
+
+        if (!newChatAdmission.allowed) {
+          await releaseRateLimitPermits(env, promptAdmission.permits);
+          return renderRateLimitSystemMessage(newChatAdmission.retryAfter);
+        }
+
         const newChatId = await createForkedChat(env, {
           clientId,
           sourceChatId: forkSourceChatId,
         });
         const newStub = env.PARTIAL_UPDATE.getByName(newChatId);
 
-        await newStub.submitForm(
+        const submitResult = await newStub.submitForm(
           clientId,
           fields,
           newChatId,
+          promptAdmission.permits,
         );
+
+        if (submitResult.kind === "queueFull") {
+          await releaseRateLimitPermits(env, promptAdmission.permits);
+          return renderClientOnlyQueueFullMessage(submitResult.message);
+        }
 
         return renderParentRedirect(new URL(chatPath(newChatId), url.origin));
       }
 
-      const stub = env.PARTIAL_UPDATE.getByName(route.chatId);
-
-      if (!(await stub.validateClientSession(clientId, clientSecret))) {
-        return new Response("Invalid client session", { status: 403 });
-      }
-
-      await stub.submitForm(
+      const submitResult = await stub!.submitForm(
         clientId,
         fields,
         route.chatId,
+        promptAdmission.permits,
       );
-      return new Response(null, { status: 204 });
+      if (submitResult.kind === "queueFull") {
+        await releaseRateLimitPermits(env, promptAdmission.permits);
+      }
+      return renderSubmitResult(submitResult);
     }
 
     if (request.method === "POST" && route.kind === "debugClear") {
@@ -1116,6 +1593,108 @@ async function authorize(
 
   const session = isAuthEnabled(env) ? await getAuthSession(request, env) : null;
   return requireRolePermission(request, env, session, permission);
+}
+
+async function resolveRateLimitContext(
+  request: Request,
+  env: AppEnv,
+  issueBrowserCookie: boolean,
+): Promise<RateLimitContext> {
+  const context: RateLimitContext = {};
+  const ipHash = await hashRateLimitKey(
+    request.headers.get("CF-Connecting-IP") || "unknown",
+  );
+  const ipObjectName = `__rate_ip_${ipHash}`;
+
+  if (envFlagEnabled(env.IP_RATE_LIMIT)) {
+    context.ipObjectName = ipObjectName;
+  }
+
+  if (!envFlagEnabled(env.BROWSER_RATE_LIMIT)) {
+    return context;
+  }
+
+  const cookieValue =
+    readCookie(request.headers.get("Cookie"), RATE_LIMIT_COOKIE_NAME) || "";
+  const identity = await env.PARTIAL_UPDATE.getByName(ipObjectName)
+    .resolveBrowserRateLimitIdentity(cookieValue, issueBrowserCookie);
+
+  if (identity.signedCookie) {
+    context.setCookie = serializeBrowserRateLimitCookie(
+      identity.signedCookie,
+      new URL(request.url).protocol === "https:",
+    );
+  }
+
+  context.browserObjectName = `__rate_browser_${
+    identity.browserId || `unidentified_${ipHash}`
+  }`;
+  return context;
+}
+
+async function acquirePromptAdmission(
+  env: AppEnv,
+  context: RateLimitContext,
+): Promise<PromptAdmission> {
+  const permits: RateLimitPermit[] = [];
+
+  for (const [scope, objectName] of [
+    ["ip", context.ipObjectName],
+    ["browser", context.browserObjectName],
+  ] as const) {
+    if (!objectName) {
+      continue;
+    }
+
+    const decision = await env.PARTIAL_UPDATE.getByName(objectName)
+      .acquireRateLimit(scope, "prompt");
+
+    if (!decision.allowed) {
+      await releaseRateLimitPermits(env, permits);
+      return decision;
+    }
+
+    if (decision.permitId) {
+      permits.push({ objectName, permitId: decision.permitId });
+    }
+  }
+
+  return { allowed: true, permits };
+}
+
+async function acquireNewChatAdmission(
+  env: AppEnv,
+  context: RateLimitContext,
+): Promise<RateLimitDecision> {
+  for (const [scope, objectName] of [
+    ["ip", context.ipObjectName],
+    ["browser", context.browserObjectName],
+  ] as const) {
+    if (!objectName) {
+      continue;
+    }
+
+    const decision = await env.PARTIAL_UPDATE.getByName(objectName)
+      .acquireRateLimit(scope, "newChat");
+
+    if (!decision.allowed) {
+      return decision;
+    }
+  }
+
+  return { allowed: true };
+}
+
+async function releaseRateLimitPermits(
+  env: AppEnv,
+  permits: RateLimitPermit[],
+): Promise<void> {
+  await Promise.all(
+    permits.map((permit) =>
+      env.PARTIAL_UPDATE.getByName(permit.objectName)
+        .releaseRateLimitPermit(permit.permitId),
+    ),
+  );
 }
 
 function canBurnTokens(
@@ -1160,6 +1739,80 @@ function renderParentRedirect(url: URL): Response {
     )};</script>`,
     { headers: htmlHeaders },
   );
+}
+
+function renderSubmitResult(result: SubmitResult): Response {
+  if (result.kind === "queueFull") {
+    return renderClientOnlyQueueFullMessage(result.message);
+  }
+
+  return new Response(null, { status: 204 });
+}
+
+function renderClientOnlyQueueFullMessage(message: string): Response {
+  return renderClientOnlySystemMessage(
+    `Too many request at once try again after the next response.<br><br>${escapeHtmlWithBreaks(message)}`,
+    429,
+    true,
+  );
+}
+
+function renderClientOnlySystemMessage(
+  message: string,
+  status: number,
+  messageIsHtml = false,
+  extraHeaders?: HeadersInit,
+): Response {
+  const payload = `<template for="/chat/append-message">
+	<div class="message message-system">${messageIsHtml ? message : escapeHtml(message)}</div>
+</template>`;
+
+  return new Response(
+    `<!DOCTYPE html><script>
+(() => {
+	const update = ${jsonForInlineScript({
+    path: "/body",
+    payload,
+    type: "html",
+  })};
+	window.parent?.partialupdates?.dispatch(update);
+})();
+</script>`,
+    {
+      headers: {
+        ...htmlHeaders,
+        ...extraHeaders,
+      },
+      status,
+    },
+  );
+}
+
+function renderRateLimitSystemMessage(retryAfter: number): Response {
+  return renderClientOnlySystemMessage(
+    "Too many requests. Try again shortly.",
+    429,
+    false,
+    { "Retry-After": String(retryAfter) },
+  );
+}
+
+function rateLimitResponse(retryAfter: number): Response {
+  return new Response("Too many requests. Try again shortly.", {
+    headers: { "Retry-After": String(retryAfter) },
+    status: 429,
+  });
+}
+
+function withRateLimitCookie(
+  response: Response,
+  cookie: string | undefined,
+): Response {
+  if (cookie) {
+    response.headers.append("Set-Cookie", cookie);
+  }
+
+  return response;
 }
 
 function canonicalChatUrl(
@@ -1381,6 +2034,168 @@ function parseBoundedInteger(
   return Number.isFinite(parsed)
     ? Math.min(Math.max(parsed, min), max)
     : fallback;
+}
+
+function envFlagEnabled(value: boolean | string | undefined): boolean {
+  return value === true || value === "true";
+}
+
+function emptyRateLimitState(): RateLimitState {
+  return {
+    active: [],
+    newChats: [],
+    prompts: [],
+  };
+}
+
+function rateLimitsForScope(scope: RateLimitScope): {
+  active: number;
+  newChatsPerHour: number;
+  promptsPerHour: number;
+  promptsPerMinute: number;
+} {
+  if (scope === "ip") {
+    return {
+      active: IP_MAX_ACTIVE_LLM_REQUESTS,
+      newChatsPerHour: IP_MAX_NEW_CHATS_PER_HOUR,
+      promptsPerHour: IP_MAX_PROMPTS_PER_HOUR,
+      promptsPerMinute: IP_MAX_PROMPTS_PER_MINUTE,
+    };
+  }
+
+  return {
+    active: BROWSER_MAX_ACTIVE_LLM_REQUESTS,
+    newChatsPerHour: BROWSER_MAX_NEW_CHATS_PER_HOUR,
+    promptsPerHour: BROWSER_MAX_PROMPTS_PER_HOUR,
+    promptsPerMinute: BROWSER_MAX_PROMPTS_PER_MINUTE,
+  };
+}
+
+function retryAfterSeconds(timestamp: number, baseline: number): number {
+  return Math.max(1, Math.ceil((timestamp - baseline) / 1000));
+}
+
+async function hashRateLimitKey(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+function readCookie(header: string | null, name: string): string | undefined {
+  if (!header) {
+    return undefined;
+  }
+
+  for (const part of header.split(";")) {
+    const [key, ...valueParts] = part.trim().split("=");
+
+    if (key === name) {
+      return valueParts.join("=") || undefined;
+    }
+  }
+
+  return undefined;
+}
+
+async function signBrowserRateLimitCookie(
+  browserId: string,
+  secret: string,
+): Promise<string> {
+  const signature = await hmacSha256(browserId, secret);
+  return `${browserId}.${base64UrlEncode(signature)}`;
+}
+
+async function verifyBrowserRateLimitCookie(
+  value: string,
+  secret: string,
+): Promise<string | undefined> {
+  const separator = value.lastIndexOf(".");
+
+  if (separator <= 0) {
+    return undefined;
+  }
+
+  const browserId = value.slice(0, separator);
+  const signature = value.slice(separator + 1);
+
+  if (!/^[a-f0-9-]{36}$/i.test(browserId)) {
+    return undefined;
+  }
+
+  const expected = base64UrlEncode(await hmacSha256(browserId, secret));
+  return constantTimeEqual(signature, expected) ? browserId : undefined;
+}
+
+async function hmacSha256(value: string, secret: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { hash: "SHA-256", name: "HMAC" },
+    false,
+    ["sign"],
+  );
+  return new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)),
+  );
+}
+
+function base64UrlEncode(value: Uint8Array): string {
+  let binary = "";
+
+  for (const byte of value) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  let difference = left.length ^ right.length;
+  const length = Math.max(left.length, right.length);
+
+  for (let index = 0; index < length; index += 1) {
+    difference |=
+      (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
+  }
+
+  return difference === 0;
+}
+
+function serializeBrowserRateLimitCookie(
+  value: string,
+  secure: boolean,
+): string {
+  return [
+    `${RATE_LIMIT_COOKIE_NAME}=${value}`,
+    "HttpOnly",
+    "Max-Age=31536000",
+    "Path=/",
+    "SameSite=Lax",
+    secure ? "Secure" : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+function promptMaxCharacters(env: AppEnv): number {
+  const configured = numberEnv(
+    env.PROMPT_MAX_CHARACTERS,
+    PROMPT_MAX_CHARACTERS_DEFAULT,
+  );
+  return configured > 0
+    ? Math.floor(configured)
+    : PROMPT_MAX_CHARACTERS_DEFAULT;
+}
+
+function characterCount(value: string): number {
+  return Array.from(value).length;
 }
 
 function getFormString(form: FormData, name: string): string {
@@ -2794,6 +3609,10 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function escapeHtmlWithBreaks(value: string): string {
+  return escapeHtml(value).replace(/\r\n|\r|\n/g, "<br>");
 }
 
 function escapeAttribute(value: string): string {

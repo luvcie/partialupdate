@@ -7,6 +7,9 @@
   "vars": {
     "EMAIL_FROM": "noreply@indirectchat.com",
     "EMAIL_FROM_NAME": "PartialUpdate",
+    "BROWSER_RATE_LIMIT": true,
+    "IP_RATE_LIMIT": true,
+    "PROMPT_MAX_CHARACTERS": 3000,
     "VERIFY_EMAIL": false,
     // "MODEL_PROVIDER": "gemini-direct",
     // "GEMINI_MODEL": "gemini-3.5-flash",
@@ -82,6 +85,9 @@
         // npx wrangler email sending enable indirectchat.com
         "EMAIL_FROM": "noreply@indirectchat.com",
         "EMAIL_FROM_NAME": "Indirect Chat",
+        "BROWSER_RATE_LIMIT": true,
+        "IP_RATE_LIMIT": true,
+        "PROMPT_MAX_CHARACTERS": 3000,
         "VERIFY_EMAIL": true,
       },
       "send_email": [
@@ -121,6 +127,9 @@
         "BETTER_AUTH_URL": "https://indirectchat.com",
         "EMAIL_FROM": "noreply@indirectchat.com",
         "EMAIL_FROM_NAME": "Indirect Chat",
+        "BROWSER_RATE_LIMIT": true,
+        "IP_RATE_LIMIT": true,
+        "PROMPT_MAX_CHARACTERS": 3000,
         "VERIFY_EMAIL": false,
       },
       "send_email": [

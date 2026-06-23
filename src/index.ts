@@ -69,6 +69,8 @@ type ReplayPageOptions = {
   agentDuration: number;
   enabled: boolean;
   pause: number;
+  promptLimit: number;
+  turn: number;
 };
 
 type ClientSession = {
@@ -124,21 +126,21 @@ type RateLimitContext = {
 };
 
 type WebSocketAttachment = {
-	clientId: string;
-	clientSecret: string;
-	chatId: string;
+  clientId: string;
+  clientSecret: string;
+  chatId: string;
 };
 
 declare global {
-	interface Element {
-		appendHTML?(html: string): void;
-		appendHTMLUnsafe?(html: string): void;
-	}
+  interface Element {
+    appendHTML?(html: string): void;
+    appendHTMLUnsafe?(html: string): void;
+  }
 }
 
 const htmlHeaders = {
-	"Cache-Control": "no-store",
-	"Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store",
+  "Content-Type": "text/html; charset=utf-8",
 };
 
 const PROTOCOL_PREFIX = "PpqUtcLGQdYN4oqc";
@@ -157,11 +159,12 @@ const FORK_INDEX_OBJECT = "__fork_index";
 const LLM_QUEUE_KEY = "llmQueue";
 const LLM_QUEUE_LIMIT = 5;
 const LLM_QUEUE_ACTIVE_STALE_MS = 5 * 60 * 1000;
-const PROMPT_MAX_CHARACTERS_DEFAULT = 3000;
+const PROMPT_MAX_CHARACTERS_DEFAULT = 20000;
 const RATE_LIMIT_COOKIE_NAME = "partialupdate_browser";
 const RATE_LIMIT_COOKIE_SECRET_KEY = "rateLimitCookieSecret";
 const RATE_LIMIT_STATE_KEY = "rateLimitState";
 const RATE_LIMIT_PERMIT_EXPIRY_MS = 5 * 60 * 1000;
+const REPLAY_PROMPT_LIMIT_MAX = 1_000_000;
 const IP_MAX_ACTIVE_LLM_REQUESTS = 20;
 const IP_MAX_PROMPTS_PER_MINUTE = 60;
 const IP_MAX_PROMPTS_PER_HOUR = 300;
@@ -196,7 +199,9 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       const clientSecret = url.searchParams.get("clientSecret");
 
       if (!chatId || !clientId || !clientSecret) {
-        return new Response("Missing chatId or client session", { status: 400 });
+        return new Response("Missing chatId or client session", {
+          status: 400,
+        });
       }
 
       const pair = new WebSocketPair();
@@ -603,9 +608,8 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
   async releaseRateLimitPermit(permitId: string): Promise<void> {
     await this.withQueueMutation(async () => {
-      const state = await this.ctx.storage.get<RateLimitState>(
-        RATE_LIMIT_STATE_KEY,
-      );
+      const state =
+        await this.ctx.storage.get<RateLimitState>(RATE_LIMIT_STATE_KEY);
 
       if (!state) {
         return;
@@ -787,8 +791,9 @@ export class PartialUpdate extends DurableObject<AppEnv> {
   ): Promise<void> {
     await Promise.all(
       permits.map((permit) =>
-        this.env.PARTIAL_UPDATE.getByName(permit.objectName)
-          .releaseRateLimitPermit(permit.permitId),
+        this.env.PARTIAL_UPDATE.getByName(
+          permit.objectName,
+        ).releaseRateLimitPermit(permit.permitId),
       ),
     );
   }
@@ -937,7 +942,9 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 
   private deleteLatestVisibleTurn(): void {
     const assistant = this.ctx.storage.sql
-      .exec("SELECT id FROM messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1")
+      .exec(
+        "SELECT id FROM messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1",
+      )
       .toArray() as Array<{ id: number }>;
     const assistantId = assistant[0]?.id;
 
@@ -955,13 +962,18 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     this.ctx.storage.sql.exec("DELETE FROM messages WHERE id = ?", assistantId);
 
     if (prompt[0]?.id) {
-      this.ctx.storage.sql.exec("DELETE FROM messages WHERE id = ?", prompt[0].id);
+      this.ctx.storage.sql.exec(
+        "DELETE FROM messages WHERE id = ?",
+        prompt[0].id,
+      );
     }
   }
 
   private deleteLatestLlmTurn(): void {
     const assistant = this.ctx.storage.sql
-      .exec("SELECT id FROM llm_messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1")
+      .exec(
+        "SELECT id FROM llm_messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1",
+      )
       .toArray() as Array<{ id: number }>;
     const assistantId = assistant[0]?.id;
 
@@ -976,10 +988,16 @@ export class PartialUpdate extends DurableObject<AppEnv> {
       )
       .toArray() as Array<{ id: number }>;
 
-    this.ctx.storage.sql.exec("DELETE FROM llm_messages WHERE id = ?", assistantId);
+    this.ctx.storage.sql.exec(
+      "DELETE FROM llm_messages WHERE id = ?",
+      assistantId,
+    );
 
     if (prompt[0]?.id) {
-      this.ctx.storage.sql.exec("DELETE FROM llm_messages WHERE id = ?", prompt[0].id);
+      this.ctx.storage.sql.exec(
+        "DELETE FROM llm_messages WHERE id = ?",
+        prompt[0].id,
+      );
     }
   }
 
@@ -1042,12 +1060,12 @@ export class PartialUpdate extends DurableObject<AppEnv> {
 				ORDER BY id ASC`,
       )
       .toArray() as Array<{
-        id: number;
-        role: ChatRole;
-        client_id: string;
-        content: string;
-        created_at: number;
-      }>;
+      id: number;
+      role: ChatRole;
+      client_id: string;
+      content: string;
+      created_at: number;
+    }>;
 
     return rows.map((row) => ({
       id: row.id,
@@ -1121,12 +1139,12 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     this.setMetadata("nextClientId", String(value));
   }
 
-  private isValidClientSession(clientId: string, clientSecret: string): boolean {
+  private isValidClientSession(
+    clientId: string,
+    clientSecret: string,
+  ): boolean {
     const rows = this.ctx.storage.sql
-      .exec(
-        "SELECT secret FROM clients WHERE client_id = ?",
-        clientId,
-      )
+      .exec("SELECT secret FROM clients WHERE client_id = ?", clientId)
       .toArray() as Array<{ secret: string }>;
     return rows[0]?.secret === clientSecret;
   }
@@ -1236,10 +1254,13 @@ export default {
         );
       }
 
-      return withRateLimitCookie(Response.redirect(
-        new URL(chatPath(newChatId()), url.origin).toString(),
-        302,
-      ), rateLimitContext.setCookie);
+      return withRateLimitCookie(
+        Response.redirect(
+          new URL(chatPath(newChatId()), url.origin).toString(),
+          302,
+        ),
+        rateLimitContext.setCookie,
+      );
     }
 
     if (request.method === "GET" && route.kind === "chat") {
@@ -1276,18 +1297,21 @@ export default {
           env,
           true,
         );
-        return withRateLimitCookie(new Response(
-          await stub.getReadOnlyForkPage(
-            forkSourceChatId,
-            route.chatId,
-            clientSession,
-            canBurnTokens(gate.role),
-            replay,
+        return withRateLimitCookie(
+          new Response(
+            await stub.getReadOnlyForkPage(
+              forkSourceChatId,
+              route.chatId,
+              clientSession,
+              canBurnTokens(gate.role),
+              replay,
+            ),
+            {
+              headers: htmlHeaders,
+            },
           ),
-          {
-            headers: htmlHeaders,
-          },
-        ), rateLimitContext.setCookie);
+          rateLimitContext.setCookie,
+        );
       }
 
       const gate = await authorize(request, env, "chat");
@@ -1317,12 +1341,15 @@ export default {
         env,
         true,
       );
-      return withRateLimitCookie(new Response(
-        await stub.getInitialPage(route.chatId, clientSession, replay),
-        {
-          headers: htmlHeaders,
-        },
-      ), rateLimitContext.setCookie);
+      return withRateLimitCookie(
+        new Response(
+          await stub.getInitialPage(route.chatId, clientSession, replay),
+          {
+            headers: htmlHeaders,
+          },
+        ),
+        rateLimitContext.setCookie,
+      );
     }
 
     if (request.method === "GET" && route.kind === "fork") {
@@ -1332,10 +1359,13 @@ export default {
         return gate.response;
       }
 
-      const forkId = await env.PARTIAL_UPDATE.getByName(
+      const forkId = await env.PARTIAL_UPDATE.getByName(route.chatId).getForkId(
         route.chatId,
-      ).getForkId(route.chatId);
-      return Response.redirect(new URL(chatPath(forkId), url.origin).toString(), 302);
+      );
+      return Response.redirect(
+        new URL(chatPath(forkId), url.origin).toString(),
+        302,
+      );
     }
 
     if (request.method === "GET" && route.kind === "socket") {
@@ -1353,10 +1383,9 @@ export default {
       }
 
       if (
-        !(await env.PARTIAL_UPDATE.getByName(route.chatId).validateClientSession(
-          clientId,
-          clientSecret,
-        ))
+        !(await env.PARTIAL_UPDATE.getByName(
+          route.chatId,
+        ).validateClientSession(clientId, clientSecret))
       ) {
         return new Response("Invalid client session", { status: 403 });
       }
@@ -1412,10 +1441,7 @@ export default {
         ? undefined
         : env.PARTIAL_UPDATE.getByName(route.chatId);
 
-      if (
-        stub &&
-        !(await stub.validateClientSession(clientId, clientSecret))
-      ) {
+      if (stub && !(await stub.validateClientSession(clientId, clientSecret))) {
         return new Response("Invalid client session", { status: 403 });
       }
 
@@ -1494,10 +1520,7 @@ export default {
         ? undefined
         : env.PARTIAL_UPDATE.getByName(route.chatId);
 
-      if (
-        stub &&
-        !(await stub.validateClientSession(clientId, clientSecret))
-      ) {
+      if (stub && !(await stub.validateClientSession(clientId, clientSecret))) {
         return new Response("Invalid client session", { status: 403 });
       }
 
@@ -1591,7 +1614,9 @@ async function authorize(
     };
   }
 
-  const session = isAuthEnabled(env) ? await getAuthSession(request, env) : null;
+  const session = isAuthEnabled(env)
+    ? await getAuthSession(request, env)
+    : null;
   return requireRolePermission(request, env, session, permission);
 }
 
@@ -1616,8 +1641,9 @@ async function resolveRateLimitContext(
 
   const cookieValue =
     readCookie(request.headers.get("Cookie"), RATE_LIMIT_COOKIE_NAME) || "";
-  const identity = await env.PARTIAL_UPDATE.getByName(ipObjectName)
-    .resolveBrowserRateLimitIdentity(cookieValue, issueBrowserCookie);
+  const identity = await env.PARTIAL_UPDATE.getByName(
+    ipObjectName,
+  ).resolveBrowserRateLimitIdentity(cookieValue, issueBrowserCookie);
 
   if (identity.signedCookie) {
     context.setCookie = serializeBrowserRateLimitCookie(
@@ -1646,8 +1672,9 @@ async function acquirePromptAdmission(
       continue;
     }
 
-    const decision = await env.PARTIAL_UPDATE.getByName(objectName)
-      .acquireRateLimit(scope, "prompt");
+    const decision = await env.PARTIAL_UPDATE.getByName(
+      objectName,
+    ).acquireRateLimit(scope, "prompt");
 
     if (!decision.allowed) {
       await releaseRateLimitPermits(env, permits);
@@ -1674,8 +1701,9 @@ async function acquireNewChatAdmission(
       continue;
     }
 
-    const decision = await env.PARTIAL_UPDATE.getByName(objectName)
-      .acquireRateLimit(scope, "newChat");
+    const decision = await env.PARTIAL_UPDATE.getByName(
+      objectName,
+    ).acquireRateLimit(scope, "newChat");
 
     if (!decision.allowed) {
       return decision;
@@ -1691,16 +1719,26 @@ async function releaseRateLimitPermits(
 ): Promise<void> {
   await Promise.all(
     permits.map((permit) =>
-      env.PARTIAL_UPDATE.getByName(permit.objectName)
-        .releaseRateLimitPermit(permit.permitId),
+      env.PARTIAL_UPDATE.getByName(permit.objectName).releaseRateLimitPermit(
+        permit.permitId,
+      ),
     ),
   );
 }
 
 function canBurnTokens(
-  role: "admin" | "dev" | "chat" | "view" | "blocked" | "anonymous" | "disabled",
+  role:
+    | "admin"
+    | "dev"
+    | "chat"
+    | "view"
+    | "blocked"
+    | "anonymous"
+    | "disabled",
 ): boolean {
-  return role === "admin" || role === "dev" || role === "chat" || role === "disabled";
+  return (
+    role === "admin" || role === "dev" || role === "chat" || role === "disabled"
+  );
 }
 
 async function lookupForkSourceChatId(
@@ -1808,11 +1846,17 @@ function withRateLimitCookie(
   response: Response,
   cookie: string | undefined,
 ): Response {
-  if (cookie) {
-    response.headers.append("Set-Cookie", cookie);
+  if (!cookie) {
+    return response;
   }
 
-  return response;
+  const headers = new Headers(response.headers);
+  headers.append("Set-Cookie", cookie);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 function canonicalChatUrl(
@@ -1980,7 +2024,9 @@ function parseUndoCount(value: string | null): number {
 }
 
 function normalizeUndoCount(value: number): number {
-  return Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 100) : 0;
+  return Number.isFinite(value) && value > 0
+    ? Math.min(Math.floor(value), 100)
+    : 0;
 }
 
 function defaultReplayPageOptions(): ReplayPageOptions {
@@ -1990,6 +2036,8 @@ function defaultReplayPageOptions(): ReplayPageOptions {
     agentDuration: 500,
     enabled: false,
     pause: 500,
+    promptLimit: REPLAY_PROMPT_LIMIT_MAX,
+    turn: 0,
   };
 }
 
@@ -1998,7 +2046,12 @@ function parseReplayPageOptions(params: URLSearchParams): ReplayPageOptions {
   return {
     agentDelay: parseBoundedInteger(params.get("agentdelay"), 0, 60000, 0),
     agentDisplay: parseAgentDisplay(params.get("agentdisplay")),
-    agentDuration: parseBoundedInteger(params.get("agentduration"), 0, 60000, 500),
+    agentDuration: parseBoundedInteger(
+      params.get("agentduration"),
+      0,
+      60000,
+      500,
+    ),
     enabled:
       replayDelay > 0 ||
       params.has("replay") ||
@@ -2006,17 +2059,29 @@ function parseReplayPageOptions(params: URLSearchParams): ReplayPageOptions {
       params.has("pause") ||
       params.has("agentdelay") ||
       params.has("agentdisplay") ||
-      params.has("agentduration"),
+      params.has("agentduration") ||
+      params.has("replaylimit") ||
+      params.has("turn"),
     pause: parseBoundedInteger(
       params.get("pause"),
       0,
       60000,
       replayDelay > 0 ? replayDelay : 500,
     ),
+    promptLimit: parseReplayLimit(params.get("replaylimit")),
+    turn: parseBoundedInteger(params.get("turn"), 0, 1000, 0),
   };
 }
 
-function parseAgentDisplay(value: string | null): ReplayPageOptions["agentDisplay"] {
+function parseReplayLimit(value: string | null): number {
+  return value === null
+    ? REPLAY_PROMPT_LIMIT_MAX
+    : parseBoundedInteger(value, 0, REPLAY_PROMPT_LIMIT_MAX, 0);
+}
+
+function parseAgentDisplay(
+  value: string | null,
+): ReplayPageOptions["agentDisplay"] {
   return value === "block" || value === "flex" || value === "grid" ? value : "";
 }
 
@@ -2260,9 +2325,15 @@ function renderReplayStyle(replay: ReplayPageOptions): string {
     return "";
   }
 
+  const styles = [
+    `.message-agent[data-replay-keys-hidden="true"] {
+	display: none !important;
+}`,
+  ];
+
   if (replay.agentDisplay) {
     const duration = Math.max(replay.agentDelay, 1);
-    return `<style>
+    styles.push(`
 @keyframes partialupdateReplayAgentDisplayShow {
 	0% { display: none; }
 	99.999% { display: none; }
@@ -2272,14 +2343,9 @@ function renderReplayStyle(replay: ReplayPageOptions): string {
 body[data-replay] .message-agent {
 	animation: partialupdateReplayAgentDisplayShow ${duration}ms step-end forwards;
 }
-</style>`;
-  }
-
-  if (replay.agentDelay <= 0) {
-    return "";
-  }
-
-  return `<style>
+`);
+  } else if (replay.agentDelay > 0) {
+    styles.push(`
 @keyframes partialupdateReplayAgentShow {
 	from { opacity: 0; }
 	to { opacity: 1; }
@@ -2290,7 +2356,10 @@ body[data-replay] .message-agent {
 	animation: partialupdateReplayAgentShow 1ms linear forwards;
 	animation-delay: ${replay.agentDelay}ms;
 }
-</style>`;
+`);
+  }
+
+  return `<style>${styles.join("\n")}</style>`;
 }
 
 function renderClientSessionRedirect(chatId: string): string {
@@ -2340,6 +2409,7 @@ function renderClientRuntime(
 	const interceptSubmits = ${jsonForInlineScript(interceptSubmits)};
 	const replayConfig = ${jsonForInlineScript(replay)};
 	const replayParams = new URL(window.location.href).searchParams;
+	const replayKeyMode = replayParams.get("replay") === "keys";
 	const replayMode =
 		replayConfig.enabled ||
 		replayParams.has("replay") ||
@@ -2347,15 +2417,43 @@ function renderClientRuntime(
 		replayParams.has("pause") ||
 		replayParams.has("agentdelay") ||
 		replayParams.has("agentdisplay") ||
-		replayParams.has("agentduration");
+		replayParams.has("agentduration") ||
+		replayParams.has("replaylimit") ||
+		replayParams.has("turn") ||
+		replayParams.has("up");
 	const replayWpm = clampNumber(Number.parseFloat(replayParams.get("wpm") || "40"), 1, 400);
+	const replayStartTurn = Math.floor(clampNumber(
+		Number.parseFloat(replayParams.get("turn") || replayConfig.turn || "0"),
+		0,
+		historyTurns.length
+	));
 	const replayPause = replayConfig.pause;
 	const replayAgentDelay = replayConfig.agentDelay;
 	const replayAgentDuration = replayConfig.agentDuration;
 	const subscriptions = new Set();
 	let replayingHistory = true;
+	let suppressAutoScroll = false;
+	let replayKeyPresses = 0;
+	const replayKeyWaiters = [];
 	const sessionStorageKey = "partialupdate:chat:" + chatId;
 	sessionStorage.setItem(sessionStorageKey, JSON.stringify({ clientId, clientSecret }));
+
+	if (replayKeyMode) {
+		document.addEventListener("keydown", (event) => {
+			if (event.key !== "ArrowRight" && event.key !== "Right" && event.code !== "ArrowRight") {
+				return;
+			}
+
+			event.preventDefault();
+			const waiter = replayKeyWaiters.shift();
+
+			if (waiter) {
+				waiter();
+			} else {
+				replayKeyPresses += 1;
+			}
+		}, true);
+	}
 
 	const cleanUrl = new URL(window.location.href);
 	if (cleanUrl.searchParams.has("clientId") || cleanUrl.searchParams.has("clientSecret")) {
@@ -2563,6 +2661,9 @@ function renderClientRuntime(
 		(update) => update.path === "/body" && update.type === "html",
 		(update) => {
 			applyHtmlUpdate(update.payload);
+			if (suppressAutoScroll) {
+				return;
+			}
 			requestAnimationFrame(() => {
 				document.documentElement.scrollTo({
 					top: document.documentElement.scrollHeight,
@@ -2584,6 +2685,16 @@ function renderClientRuntime(
 		new Promise((resolve) => {
 			requestAnimationFrame(() => requestAnimationFrame(resolve));
 		});
+	const waitForReplayKey = () => {
+		if (replayKeyPresses > 0) {
+			replayKeyPresses -= 1;
+			return Promise.resolve();
+		}
+
+		return new Promise((resolve) => {
+			replayKeyWaiters.push(resolve);
+		});
+	};
 
 	const promptTextarea = () => {
 		const prompt = document.querySelector('textarea[name="prompt"]');
@@ -2601,27 +2712,116 @@ function renderClientRuntime(
 		prompt.dispatchEvent(new Event("input", { bubbles: true }));
 	};
 
-	const typePromptText = async (text) => {
+	const currentReplayPromptLimit = () => {
+		const params = new URL(window.location.href).searchParams;
+		return params.has("replaylimit")
+			? clampNumber(Number.parseFloat(params.get("replaylimit") || "0"), 0, 1000000)
+			: replayConfig.promptLimit;
+	};
+
+	const scrollPageToBottom = (behavior = "auto") => {
+		document.documentElement.scrollTo({
+			top: document.documentElement.scrollHeight,
+			behavior
+		});
+	};
+
+	const scrollPromptIntoView = () => {
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				scrollPageToBottom("smooth");
+			});
+		});
+	};
+
+	const currentReplayUpOffset = () => {
+		const params = new URL(window.location.href).searchParams;
+		return params.has("up")
+			? clampNumber(Number.parseFloat(params.get("up") || "0"), 0, 1000)
+			: null;
+	};
+
+	const scrollReplayUserIntoView = (user) => {
+		const offset = currentReplayUpOffset();
+
+		if (!user || offset === null) {
+			return;
+		}
+
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				window.scrollTo({
+					top: user.getBoundingClientRect().top + window.scrollY - offset,
+					behavior: "smooth"
+				});
+			});
+		});
+	};
+
+	const typePromptText = async (text, holdInstantText = false) => {
 		const prompt = promptTextarea();
 
 		if (!prompt || !text) {
-			return;
+			return "";
 		}
 
 		prompt.focus({ preventScroll: true });
 		let value = "";
 		const averageDelay = 60000 / (replayWpm * 4);
+		const characters = Array.from(text);
+		const promptLimit = currentReplayPromptLimit();
+		const typedCharacters = characters.slice(0, promptLimit);
+		const instantCharacters = characters.slice(promptLimit);
 
-		for (const character of text) {
+		for (const character of typedCharacters) {
 			value += character;
 			setPromptValue(value);
+			scrollPageToBottom("auto");
 			await sleep(averageDelay * (0.4 + Math.random() * 1.2));
+		}
+
+		if (instantCharacters.length > 0) {
+			if (holdInstantText) {
+				return value + instantCharacters.join("");
+			}
+			setPromptValue(value + instantCharacters.join(""));
+			scrollPageToBottom("auto");
+		}
+
+		return "";
+	};
+
+	const hiddenReplayAgents = [];
+	const replayUsers = [];
+
+	const dispatchTurn = (turn, options = {}) => {
+		const knownAgents = new Set(document.querySelectorAll(".message-agent"));
+		const knownUsers = new Set(document.querySelectorAll(".message-user"));
+		for (const update of turn.updates) {
+			dispatch(update);
+		}
+
+		if (!replayKeyMode || options.revealAgents) {
+			return;
+		}
+
+		for (const agent of document.querySelectorAll(".message-agent")) {
+			if (!knownAgents.has(agent)) {
+				agent.dataset.replayKeysHidden = "true";
+				hiddenReplayAgents.push(agent);
+			}
+		}
+
+		for (const user of document.querySelectorAll(".message-user")) {
+			if (!knownUsers.has(user)) {
+				replayUsers.push(user);
+			}
 		}
 	};
 
-	const dispatchTurn = (turn) => {
-		for (const update of turn.updates) {
-			dispatch(update);
+	const revealReplayAgents = () => {
+		for (const agent of hiddenReplayAgents.splice(0)) {
+			delete agent.dataset.replayKeysHidden;
 		}
 	};
 
@@ -2639,7 +2839,45 @@ function renderClientRuntime(
 			await nextPaint();
 		}
 
-		for (let index = 0; index < historyTurns.length; index += 1) {
+		if (replayStartTurn > 0) {
+			for (const turn of historyTurns.slice(0, replayStartTurn)) {
+				dispatchTurn(turn, { revealAgents: true });
+			}
+			await nextPaint();
+		}
+
+		if (replayKeyMode) {
+			for (let index = replayStartTurn; index < historyTurns.length; index += 1) {
+				const turn = historyTurns[index];
+				const userText = turn.prompt || "";
+
+				if (userText) {
+					await waitForReplayKey();
+					const limitedText = await typePromptText(userText, true);
+
+					if (limitedText) {
+						await waitForReplayKey();
+						setPromptValue(limitedText);
+					}
+				}
+
+				await waitForReplayKey();
+				suppressAutoScroll = true;
+				setPromptValue("");
+				dispatchTurn(turn);
+				suppressAutoScroll = false;
+
+				await waitForReplayKey();
+				revealReplayAgents();
+				scrollReplayUserIntoView(replayUsers.shift());
+
+				await waitForReplayKey();
+				scrollPromptIntoView();
+			}
+			return;
+		}
+
+		for (let index = replayStartTurn; index < historyTurns.length; index += 1) {
 			const turn = historyTurns[index];
 			const userText = turn.prompt || "";
 
@@ -2736,12 +2974,12 @@ function renderClientRuntime(
 }
 
 function jsonForInlineScript(value: unknown): string {
-	return JSON.stringify(value)
-		.replace(/</g, "\\u003c")
-		.replace(/>/g, "\\u003e")
-		.replace(/&/g, "\\u0026")
-		.replace(/\u2028/g, "\\u2028")
-		.replace(/\u2029/g, "\\u2029");
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 async function* streamModelResponse(
@@ -3023,7 +3261,10 @@ function parseGatewayModelSettings(
   return settings;
 }
 
-function numberEnv(value: number | string | undefined, fallback: number): number {
+function numberEnv(
+  value: number | string | undefined,
+  fallback: number,
+): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -3394,12 +3635,14 @@ function coerceDelimitedUpdate(
   clientProps: unknown,
   payload: string,
 ): Update {
-  const server = serverProps && typeof serverProps === "object"
-    ? (serverProps as { clients?: unknown })
-    : {};
-  const client = clientProps && typeof clientProps === "object"
-    ? (clientProps as { path?: unknown; type?: unknown })
-    : {};
+  const server =
+    serverProps && typeof serverProps === "object"
+      ? (serverProps as { clients?: unknown })
+      : {};
+  const client =
+    clientProps && typeof clientProps === "object"
+      ? (clientProps as { path?: unknown; type?: unknown })
+      : {};
   const clients = coerceClients(server.clients) ?? {
     mode: "exclude" as const,
     ids: [],
@@ -3474,7 +3717,10 @@ function coerceClients(value: unknown): Update["clients"] | null {
   return {
     mode,
     ids: clients.ids
-      .filter((id): id is string | number => typeof id === "string" || typeof id === "number")
+      .filter(
+        (id): id is string | number =>
+          typeof id === "string" || typeof id === "number",
+      )
       .map(String),
   };
 }
@@ -3589,13 +3835,7 @@ function injectPageIds(
   clientSecret: string,
   forkId: string,
 ): string {
-  return injectServerReplacements(
-    html,
-    chatId,
-    clientId,
-    clientSecret,
-    forkId,
-  );
+  return injectServerReplacements(html, chatId, clientId, clientSecret, forkId);
 }
 
 function escapeRegExp(value: string): string {

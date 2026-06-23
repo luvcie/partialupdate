@@ -87,7 +87,7 @@
         "EMAIL_FROM_NAME": "Indirect Chat",
         "BROWSER_RATE_LIMIT": true,
         "IP_RATE_LIMIT": true,
-        "PROMPT_MAX_CHARACTERS": 3000,
+        "PROMPT_MAX_CHARACTERS": 20000,
         "VERIFY_EMAIL": true,
       },
       "send_email": [

@@ -106,6 +106,10 @@
   animation: fadeInUp 0.25s ease-out forwards;
 }
 
+.message-full-width {
+  max-width: 100%;
+}
+
 /* User Message Styling (Sent) */
 .message-user {
   align-self: flex-end;

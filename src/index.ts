@@ -2431,6 +2431,8 @@ function renderClientRuntime(
 	const replayAgentDelay = replayConfig.agentDelay;
 	const replayAgentDuration = replayConfig.agentDuration;
 	const subscriptions = new Set();
+	const activatedScriptPromises = [];
+	const dynamicScriptLoads = new Map();
 	let replayingHistory = true;
 	let suppressAutoScroll = false;
 	let replayKeyPresses = 0;
@@ -2502,6 +2504,68 @@ function renderClientRuntime(
 			return new RegExp("\\\\bname\\\\s*=\\\\s*([\\"'])?" + escaped + "\\\\1").test(text);
 		};
 
+		const loadDynamicScript = (inertScript) => {
+			const src = inertScript.src || inertScript.getAttribute("src");
+
+			if (!src) {
+				return Promise.resolve();
+			}
+
+			const url = new URL(src, window.location.href).toString();
+			const existing = dynamicScriptLoads.get(url);
+
+			if (existing) {
+				return existing;
+			}
+
+			const promise = new Promise((resolve) => {
+				const script = document.createElement("script");
+
+				for (const attribute of inertScript.attributes) {
+					script.setAttribute(attribute.name, attribute.value);
+				}
+
+				script.async = false;
+				const timeout = window.setTimeout(() => {
+					console.warn("Dynamic script timed out", url);
+					resolve();
+				}, 15000);
+				const finish = () => {
+					window.clearTimeout(timeout);
+					resolve();
+				};
+				script.addEventListener("load", finish, { once: true });
+				script.addEventListener("error", () => {
+					console.warn("Dynamic script failed to load", url);
+					finish();
+				}, { once: true });
+				document.head.append(script);
+			});
+
+			dynamicScriptLoads.set(url, promise);
+			return promise;
+		};
+
+		const externalScriptsIn = (root) => {
+			const scripts = root.querySelectorAll ? Array.from(root.querySelectorAll("script[src]")) : [];
+			const templates = root.querySelectorAll ? Array.from(root.querySelectorAll("template")) : [];
+
+			for (const template of templates) {
+				scripts.push(...externalScriptsIn(template.content));
+			}
+
+			return scripts;
+		};
+
+		const preloadExternalScripts = async (root) => {
+			const scripts = externalScriptsIn(root);
+
+			for (const script of scripts) {
+				await loadDynamicScript(script);
+				script.remove();
+			}
+		};
+
 		const activateScripts = (root) => {
 			const scripts = root.querySelectorAll ? root.querySelectorAll("script") : [];
 
@@ -2514,6 +2578,9 @@ function renderClientRuntime(
 
 				if (script.src) {
 					script.async = false;
+					activatedScriptPromises.push(loadDynamicScript(inertScript));
+					inertScript.remove();
+					continue;
 				}
 
 				script.text = inertScript.textContent || "";
@@ -2589,20 +2656,24 @@ function renderClientRuntime(
 	};
 
 		const appendRawHtml = (html) => {
-			if (typeof document.body.appendHTMLUnsafe === "function") {
-				document.body.appendHTMLUnsafe(html, { runScripts: true });
-			} else if (typeof document.body.appendHTML === "function") {
-				document.body.appendHTML(html);
-			} else {
-				const container = document.createElement("template");
-				container.innerHTML = html;
-				document.body.append(activeClone(container.content));
-			}
+			const container = document.createElement("template");
+			container.innerHTML = html;
+			document.body.append(activeClone(container.content));
 		};
 
-	const applyHtmlUpdate = (html) => {
+	const waitForActivatedScripts = async (startIndex) => {
+		const scripts = activatedScriptPromises.slice(startIndex);
+
+		if (scripts.length > 0) {
+			await Promise.all(scripts);
+		}
+	};
+
+	const applyHtmlUpdate = async (html) => {
+		const scriptStartIndex = activatedScriptPromises.length;
 		const container = document.createElement("template");
 		container.innerHTML = html;
+		await preloadExternalScripts(container.content);
 		const templates = Array.from(container.content.querySelectorAll("template[for]"));
 
 		for (const template of templates) {
@@ -2615,9 +2686,10 @@ function renderClientRuntime(
 
 			if (container.content.textContent.trim() || container.content.children.length > 0) {
 				const wrapper = document.createElement("div");
-				wrapper.append(activeClone(container.content));
+				wrapper.append(container.content.cloneNode(true));
 				appendRawHtml(wrapper.innerHTML);
 			}
+			await waitForActivatedScripts(scriptStartIndex);
 		};
 
 	const appendLocalAgentMessage = (text) => {
@@ -2659,8 +2731,8 @@ function renderClientRuntime(
 
 	window.partialupdates.subscribe(new Subscription(
 		(update) => update.path === "/body" && update.type === "html",
-		(update) => {
-			applyHtmlUpdate(update.payload);
+		async (update) => {
+			await applyHtmlUpdate(update.payload);
 			if (suppressAutoScroll) {
 				return;
 			}

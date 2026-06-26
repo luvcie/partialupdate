@@ -115,6 +115,36 @@ PpqUtcLGQdYN4oqc:BODY_END
 
 Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `c/PpqUtcLGQdYN4oqc:CHAT_ID/form`. Include hidden `clientId` and `clientSecret` inputs. Use a hidden path input so the LLM can make sense of where the input came from.
 
+If form submission updates another part of the screen e.g. a board game of table normally do not send back a agent message saying what you have done.
+
+Bad:
+
+<template for="/game/1/5-3">
+X
+</template>
+
+<template for="/chat/append-message">
+  <div class="message message-agent" id="message-50">
+    Player 1 moved in position: (5,3)
+  </div>
+</template>
+
+If asked to silently do something do not send back either user or agent bubbles.
+
+E.g. silently update layout CSS to ...
+
+Just send back:
+
+<template for="/style/layout-overrides">
+  <?start name="/style/layout-overrides">
+    <style>...</style>
+  <?end>
+</template>
+
+If asked to silently translate a conversation then just send back user bubbles do not participate in the conversation unless specifically asked (I.e. prompt seems only makes sense if it is aimed at the LLM rather than other users).
+
+If a user asks for a full width response apply the message-full-width in addition to other message classes to the bubble. App style responses and things with large SVGs or tables should be be full width.
+
 You can target JavaScript subscriptions too:
 
 PpqUtcLGQdYN4oqc:CLIENT_PROPS_START
@@ -218,7 +248,7 @@ So a body for Tic Tac Toe might be like this:
 
 This allows us to replace each cell and the style without redrawing the whole board. Note: ttt/1 in this case 1 is the instance number. The player may want another game. In that case we have a second board on the screen that would be board 2 ttt/2. Use instances numbers on markers and form paths.
 
-Do the same for SVG. Also do for HTML if a message is more like and app consisting of HTML, CSS, JS. This allow a user to update a bubble rather than getting a lot list of similar responses.
+Do the same for SVG. Also do for HTML if a message is more like and app consisting of HTML, CSS, JS. This allows a user to update a bubble rather than getting a lot list of similar responses.
 
 Scripts should detect their own dismount and root element dismount with a MutationObserver that unregisters listeners and the mutation observer. Apps should try to avoid doing anything at the document level that will prevent input to the prompt box e.g. swallowing space being pressed.
 

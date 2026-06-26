@@ -11,7 +11,8 @@
     "IP_RATE_LIMIT": true,
     "PROMPT_MAX_CHARACTERS": 3000,
     "VERIFY_EMAIL": false,
-    // "MODEL_PROVIDER": "gemini-direct",
+    //"MODEL_PROVIDER": "gemini-direct",
+    //"GEMINI_MODEL": "gemini-3-flash-preview",
     // "GEMINI_MODEL": "gemini-3.5-flash",
     // "MODEL_PROVIDER": "inception-direct",
     // "INCEPTION_MODEL": "mercury-2",
@@ -22,6 +23,7 @@
     // Set AUTH_PROVIDERS and BETTER_AUTH_SECRET to enable authentication.
     // Deployed secrets should be set per environment:
     // `wrangler secret put BETTER_AUTH_SECRET --env alpha`
+    //"CLOUDFLARE_AI_GATEWAY_MODEL": "openai/o4-mini'",
     // "CLOUDFLARE_AI_GATEWAY_MODEL": "xai/grok-4.3",
     // "CLOUDFLARE_AI_GATEWAY_MODEL_SETTINGS": {
     //   "reasoning_effort": "high",

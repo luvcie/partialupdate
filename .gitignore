@@ -48,6 +48,8 @@ bower_components
 
 build/Release
 
+
+.wrangler/
 # Dependency directories
 
 node_modules/

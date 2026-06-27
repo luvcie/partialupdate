@@ -43,13 +43,13 @@ Forms can be styled with CSS E.g. to look like a game of Tic Tac Toe:
 The chat is multi user so you can have play multi player games with a one sentence prompt:
 
 <div align="center">
-<img width="768" alt="connect4" src="https://github.com/user-attachments/assets/3b92969e-3d74-449a-9991-eeee400ea38f" />
-</div>div
+<img width="1024" alt="connect4" src="https://github.com/user-attachments/assets/3b92969e-3d74-449a-9991-eeee400ea38f" />
+</div>
 
 Or have translated conversations:
 
 <div>
-<img width="768" alt="translate" src="https://github.com/user-attachments/assets/33ccab35-1662-463c-bf50-b89d22ca39f9" />
+<img width="1024" alt="translate" src="https://github.com/user-attachments/assets/33ccab35-1662-463c-bf50-b89d22ca39f9" />
 </div>
 
 

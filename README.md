@@ -4,7 +4,7 @@
 <img width="768" alt="martix" src="https://github.com/user-attachments/assets/6ff33272-1bb0-4551-a296-3481e243015f" />
 </div>
 
-A multi user AI chat that generates its own UI on the fly. Based on the new [Dynamic Partial Update](https://developer.chrome.com/blog/declarative-partial-updates) spec.
+A multi-user AI chat that generates its own UI on the fly. Based on the new [Dynamic Partial Update](https://developer.chrome.com/blog/declarative-partial-updates) spec.
 
 ```html
 <div class="chat">
@@ -38,7 +38,7 @@ Forms can be styled with CSS E.g. to look like a game of Tic Tac Toe:
 <img width="768" alt="ttt" src="https://github.com/user-attachments/assets/51417090-17e0-4968-a2ec-3ba9dad4392d" />
 </div>
 
-The chat is multi user so you can have play multi player games with a one sentence prompt:
+The chat is multi-user so you can have play multiplayer games with a one sentence prompt:
 
 <div align="center">
 <img width="800" alt="connect4" src="https://github.com/user-attachments/assets/3b92969e-3d74-449a-9991-eeee400ea38f" />
@@ -50,13 +50,13 @@ Or have conversations where each person sees the chat in their own language:
 <img width="800" alt="translate" src="https://github.com/user-attachments/assets/33ccab35-1662-463c-bf50-b89d22ca39f9" />
 </div>
 
-Enabling cross culture communication:
+Enabling cross-cultural communication:
 
 <div align="center">
 <img width="768" alt="image" src="https://github.com/user-attachments/assets/68801c9a-534b-42aa-9c1b-e2f34db8dd92" />
 </div>
 
-The chat can completely redesign its own interface E.g. adding voice dictation. Here I ask it to remove the prompt box and make the page look like Wikipedia. The links are forms which when submited cause the LLM to replace the entire HTML content of the article. 
+The chat can completely redesign its own interface E.g. adding voice dictation. Here I ask it to remove the prompt box and make the page look like Wikipedia. The links are forms which when submitted cause the LLM to replace the entire HTML content of the article. 
 
 <div align="center">
 <img width="768" alt="wikipedia" src="https://github.com/user-attachments/assets/4f50ce1f-cd94-415b-aa6d-d4623eb0da05" />
@@ -83,7 +83,7 @@ Until this is hardened I would recommend only running in local dev. Like Opencla
 Two attacks a malicious prompter could make that will cost you:
 
 1) Create clientside code that submits prompts in a tight loop (high inference cost)
-2) Create clientside code loop that keeps makeing other requests (high cloudflare cost)
+2) Create clientside code loop that keeps making other requests (high cloudflare cost)
 
 Mitigate 1 by only using with a AI API keys with limited funds e.g. $20 don't use with an expensive frontier model connected straight to your bank account. Mitigate 2 by running in local dev where there is no cost for worker requests. Normal usage for a single user should be dirt cheap to run.
 
@@ -91,16 +91,64 @@ Mitigate 1 by only using with a AI API keys with limited funds e.g. $20 don't us
 
 Requirements:
 
-* be signed up to cloudflare to run this
-* some credits in Cloudflare AI Gateway
-* You will need the following bare minimum env vars set in .env
-   -  CLOUDFLARE_ACCOUNT_ID (this is on the url after you login )
-   -  CLOUDFLARE_API_TOKEN (https://dash.cloudflare.com/YOUR_ACCOUNT_ID/api-tokens)
-       * AI Gateway Run
-       * AI Gateway Read
-       * Workers AI Write
-       * Workers AI Read
-   -  CLOUDFLARE_AI_GATEWAY_ID (https://dash.cloudflare.com/YOUR_ACCOUNT_ID/ai/ai-gateway/gateways 'default' or click 'create gateway' and use the name)
+1. Signed up to Cloudflare to run this (I think free plan will be fine)  
+https://dash.cloudflare.com/sign-up
+2. Buy some credits in Cloudflare AI Gateway  
+Search for AI Gateway click on a gateway add funds top right click the dollar amount
+https://dash.cloudflare.com/YOUR_ACCOUNT_ID/ai/ai-gateway/gateways/default/overview  
+<img width="241" height="125" alt="image" src="https://github.com/user-attachments/assets/1b1b0c81-081a-4854-b90a-e5cabb6ece42" />  
+
+3. You will need the following bare minimum env vars set in .env
+
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_AI_GATEWAY_ID=
+
+Your CLOUDFLARE_ACCOUNT_ID can be found on the url once you login.
+
+Create an API token with at least the following permissions
+https://dash.cloudflare.com/YOUR_ACCOUNT_ID/api-tokens
+
+* AI Gateway: Read, Write, Run
+* Workers AI: Read, Write
+* Workers Scripts: Read, Write
+
+Paste the API key into the .env
+
+For CLOUDFLARE_AI_GATEWAY_ID use `default` or create an new one and use that.
+
+### Running
+
+```bash
+npm install
+npm run dev
+```
+
+Open browser at the mentioned url.
+
+<img width="680" height="189" alt="image" src="https://github.com/user-attachments/assets/8b9b1daf-e9d9-4d75-97ce-f2ba6a62d5c4" />
+
+
+### dev:secure
+
+If you do not like having your secrets in an .env file visible to your Claude, Codex AI coding agent. On Mac you can put them in your keychain
+
+```bash
+security find-generic-password -a "frontclaw" -s "CLOUDFLARE_API_TOKEN" -w
+security find-generic-password -a "frontclaw" -s "CLOUDFLARE_ACCOUNT_ID" -w
+security find-generic-password -a "frontclaw" -s "CLOUDFLARE_AI_GATEWAY_ID" -w
+```
+
+Then run:
+
+```bash
+npm run dev:secure
+```
+
+
+
+
+
 
 
 

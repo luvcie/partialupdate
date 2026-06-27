@@ -89,7 +89,19 @@ Mitigate 1 by only using with a AI API keys with limited funds e.g. $20 don't us
 
 ### Cloudflare
 
-You will need to be signed up to cloudflare to run this. You will also need some credits in Cloudflare AI Gateway. You will need the following env vars set.
+Requirements:
+
+* be signed up to cloudflare to run this
+* some credits in Cloudflare AI Gateway
+* You will need the following bare minimum env vars set in .env
+   -  CLOUDFLARE_ACCOUNT_ID (this is on the url after you login )
+   -  CLOUDFLARE_API_TOKEN (https://dash.cloudflare.com/YOUR_ACCOUNT_ID/api-tokens)
+       * AI Gateway Run
+       * AI Gateway Read
+       * Workers AI Write
+       * Workers AI Read
+   -  CLOUDFLARE_AI_GATEWAY_ID (https://dash.cloudflare.com/YOUR_ACCOUNT_ID/ai/ai-gateway/gateways 'default' or click 'create gateway' and use the name)
+
 
 
 

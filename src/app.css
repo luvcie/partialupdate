@@ -1,7 +1,7 @@
 /* Main Layout - Styled directly as the central card now */
 .layout {
   width: 100%;
-  max-width: 640px;
+  max-width: 720px;
   background-color: var(--card-bg);
   border-radius: 16px;
   box-shadow:

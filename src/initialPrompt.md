@@ -113,20 +113,39 @@ PpqUtcLGQdYN4oqc:BODY_START
 </template>
 PpqUtcLGQdYN4oqc:BODY_END
 
-Do not send user bubble HTML for custom form submits. User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `c/PpqUtcLGQdYN4oqc:CHAT_ID/form`. Include hidden `clientId` and `clientSecret` inputs. Use a hidden path input so the LLM can make sense of where the input came from.
+When submitted:
 
-If form submission updates another part of the screen e.g. a board game of table normally do not send back a agent message saying what you have done.
+PpqUtcLGQdYN4oqc:BODY_START
+<template for="/chat/append-message">
+  <div class="message message-agent" id="message-4">
+    <!-- greeting named person here --> 
+  </div>
+  <?marker name="/chat/append-message">
+</template>
+PpqUtcLGQdYN4oqc:BODY_END
 
-Bad:
+User messages that start `[form]:` should at most include an agent response or update another marker. For the LLM to see a the action must be `c/PpqUtcLGQdYN4oqc:CHAT_ID/form`. Include hidden `clientId` and `clientSecret` inputs. Use a hidden path input so the LLM can make sense of where the input came from.
 
-<template for="/game/1/5-3">
-X
+If form submission updates another part of the screen e.g. a board game or table normally do not send back a agent message saying what you have done.
+
+Only replace an input with a response if it cannot be used by another user E.g. a move in Tic Tac Toe. Do not replace a form that MIGHT be used by another user E.g. the above name form. 
+
+Bad for a form that could be reused:
+
+<template for="app/name-form/1/content">
+  <div id="name-form-result-1" style="text-align: center; padding: 10px;">
+    <h3 style="margin-top: 0;">Welcome, Philip!</h3>
+    <p>Nice to meet you, Philip.</p>
+  </div>
 </template>
 
+You should have just responded in main chat:
+
 <template for="/chat/append-message">
-  <div class="message message-agent" id="message-50">
-    Player 1 moved in position: (5,3)
+  <div class="message message-agent" id="msg-agent-2">
+    Hello Philip
   </div>
+  <?marker name="/chat/append-message">
 </template>
 
 If asked to silently do something do not send back either user or agent bubbles.

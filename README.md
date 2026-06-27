@@ -76,6 +76,8 @@ The results are then submitted back to the LLM context and the CSS is made avail
 
 ## Installation
 
+### Warning
+
 Until this is hardened I would recommend only running in local dev. Like Openclaw you use this at your own risk. Currently this app works best with Gemini 3.0 Flash it costs about $0.01 per prompt and Gemini seems to really get the idea of Partial Updates and forms that can edit themselves better than other models.
 
 Two attacks a malicious prompter could make that will cost you:
@@ -83,7 +85,13 @@ Two attacks a malicious prompter could make that will cost you:
 1) Create clientside code that submits prompts in a tight loop (high inference cost)
 2) Create clientside code loop that keeps makeing other requests (high cloudflare cost)
 
-Mitigate 1 by only using with a AI API keys with limited funds e.g. $20 don't use with an expensive frontier model connected straight to your bank account. Mitigate 2 by running in local dev where there is no cost for worker requests. Normal usage for a single user should be dirt cheap to run. 
+Mitigate 1 by only using with a AI API keys with limited funds e.g. $20 don't use with an expensive frontier model connected straight to your bank account. Mitigate 2 by running in local dev where there is no cost for worker requests. Normal usage for a single user should be dirt cheap to run.
+
+### Cloudflare
+
+You will need to be signed up to cloudflare to run this. You will also need some credits in Cloudflare AI Gateway. You will need the following env vars set.
+
+
 
 
 

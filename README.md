@@ -44,10 +44,16 @@ The chat is multi user so you can have play multi player games with a one senten
 <img width="800" alt="connect4" src="https://github.com/user-attachments/assets/3b92969e-3d74-449a-9991-eeee400ea38f" />
 </div>
 
-Or have translated conversations:
+Or have conversations where each person sees the chat in their own language:
 
 <div align="center">
 <img width="800" alt="translate" src="https://github.com/user-attachments/assets/33ccab35-1662-463c-bf50-b89d22ca39f9" />
+</div>
+
+Enabling cross culture communication:
+
+<div align="center">
+<img width="768" alt="image" src="https://github.com/user-attachments/assets/68801c9a-534b-42aa-9c1b-e2f34db8dd92" />
 </div>
 
 The chat can completely redesign its own interface E.g. adding voice dictation. Here I ask it to remove the prompt box and make the page look like Wikipedia. The links are forms which when submited cause the LLM to replace the entire HTML content of the article. 
@@ -63,6 +69,8 @@ Because the LLM has knowledge of CDNs it can inject Tailwind, d3.js, CodeMirror 
 </div>
 
 The results are then submitted back to the LLM context and the CSS is made available to be used in response to further prompts.
+
+
 
 
 

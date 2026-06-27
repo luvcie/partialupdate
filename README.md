@@ -70,7 +70,8 @@ Because the LLM has knowledge of CDNs it can inject Tailwind, d3.js, CodeMirror 
 
 The results are then submitted back to the LLM context and the CSS is made available to be used in response to further prompts.
 
-
-
+<div align="center">
+<img width="768" alt="stars" src="https://github.com/user-attachments/assets/8568aeb2-fb4c-41af-9f14-95a0ebf2726c" />
+</div>
 
 

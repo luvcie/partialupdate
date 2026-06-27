@@ -20,7 +20,7 @@ A multi user AI chat that generates its own UI on the fly. Based on the new [Dyn
 </template>
 ```
 
-The LLM responds with HTML not markdown so the response can include SVG, CSS, JS, MathML etc. This can be applied in various template areas.
+The LLM responds with HTML not markdown so the response can include SVG, CSS, JS, MathML, WebGL etc. This can be applied in various template areas.
 
 <div align="center">
 <img width="768" alt="julia2" src="https://github.com/user-attachments/assets/95ab8fb8-2451-42b5-84dd-e82d0bc69f18" />
@@ -41,15 +41,16 @@ Forms can be styled with CSS E.g. to look like a game of Tic Tac Toe:
 The chat is multi user so you can have play multi player games with a one sentence prompt:
 
 <div align="center">
-<img width="1024" alt="connect4" src="https://github.com/user-attachments/assets/3b92969e-3d74-449a-9991-eeee400ea38f" />
+<img width="800" alt="connect4" src="https://github.com/user-attachments/assets/3b92969e-3d74-449a-9991-eeee400ea38f" />
 </div>
 
 Or have translated conversations:
 
-<div>
-<img width="1024" alt="translate" src="https://github.com/user-attachments/assets/33ccab35-1662-463c-bf50-b89d22ca39f9" />
+<div align="center">
+<img width="800" alt="translate" src="https://github.com/user-attachments/assets/33ccab35-1662-463c-bf50-b89d22ca39f9" />
 </div>
 
+The chat can completely redesign its own interface E.g. adding voice dictation. Here I ask it to remove the prompt box and make the page look like Wikipedia. The links are forms which when submited cause the LLM to replace the entire HTML content of the article. 
 
 <div align="center">
 <img width="768" alt="wikipedia" src="https://github.com/user-attachments/assets/4f50ce1f-cd94-415b-aa6d-d4623eb0da05" />

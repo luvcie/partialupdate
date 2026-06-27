@@ -1,7 +1,7 @@
 # Partial Update
 
 <div align="center">
-  <a href="https://www.youtube.com/watch?v=qQYZr571h8k" target="_blank">
+  <a href="https://www.youtube.com/watch?v=f39MnczcJZA" target="_blank">
     <img src="https://github.com/user-attachments/assets/9b1d6bb6-0e7f-40d4-bf26-4e7186a7908d" alt="Watch the video" width="800">
   </a>
 </div>

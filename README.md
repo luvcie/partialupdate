@@ -1,12 +1,10 @@
 # Partial Update
 
-A multi user AI chat that generates its own UI on the fly.
-
 <div align="center">
 <img width="768" alt="martix" src="https://github.com/user-attachments/assets/6ff33272-1bb0-4551-a296-3481e243015f" />
 </div>
 
-Based on the new [Dynamic Partial Update](https://developer.chrome.com/blog/declarative-partial-updates) spec.
+A multi user AI chat that generates its own UI on the fly. Based on the new [Dynamic Partial Update](https://developer.chrome.com/blog/declarative-partial-updates) spec.
 
 ```html
 <div class="chat">

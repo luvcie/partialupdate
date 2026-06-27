@@ -55,3 +55,14 @@ The chat can completely redesign its own interface E.g. adding voice dictation. 
 <div align="center">
 <img width="768" alt="wikipedia" src="https://github.com/user-attachments/assets/4f50ce1f-cd94-415b-aa6d-d4623eb0da05" />
 </div>
+
+Because the LLM has knowledge of CDNs it can inject Tailwind, d3.js, CodeMirror or any other popular library. Here I ask it to add a CodeMirror playground so I can edit some CSS.
+
+<div align="center">
+<img width="768" alt="codemirror" src="https://github.com/user-attachments/assets/b3f2b63e-77be-4f6e-acea-34b1ddd6302b" />
+</div>
+
+The results are then submitted back to the LLM context and the CSS is made available to be used in response to further prompts.
+
+
+

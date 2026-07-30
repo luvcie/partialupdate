@@ -10,6 +10,7 @@
 		<?marker name="/chat/append-message">
 	</div>
 	<?marker name="/chat/after">
+	<?start name="/chat/pending"><?end>
     <?start name="/chat/prompt-box">
         <div class="prompt">
             <form method="post" action="PpqUtcLGQdYN4oqc:CHAT_ID/prompt" target="hidden-submit-frame" onsubmit="const prompt = this.elements.namedItem('prompt'); if (!(prompt instanceof HTMLTextAreaElement)) return true; if (!prompt.value.trim()) { event.preventDefault(); return false; } setTimeout(() => { prompt.value = ''; }, 0);">

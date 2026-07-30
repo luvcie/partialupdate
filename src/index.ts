@@ -874,29 +874,35 @@ export class PartialUpdate extends DurableObject<AppEnv> {
     const parser = new UpdateStreamParser();
     let response = "";
 
-    for await (const chunk of streamModelResponse(
-      this.env,
-      llmMessages,
-      clientId,
-    )) {
-      const normalizedChunk = normalizeModelOutput(
-        sanitizeModelOutput(chunk),
-        clientId,
-      );
+    await this.broadcast(pendingUpdate(clientId, true));
 
-      if (!normalizedChunk) {
-        continue;
+    try {
+      for await (const chunk of streamModelResponse(
+        this.env,
+        llmMessages,
+        clientId,
+      )) {
+        const normalizedChunk = normalizeModelOutput(
+          sanitizeModelOutput(chunk),
+          clientId,
+        );
+
+        if (!normalizedChunk) {
+          continue;
+        }
+
+        response += normalizedChunk;
+
+        for (const update of parser.push(normalizedChunk)) {
+          await this.broadcast(update);
+        }
       }
 
-      response += normalizedChunk;
-
-      for (const update of parser.push(normalizedChunk)) {
+      for (const update of parser.finish()) {
         await this.broadcast(update);
       }
-    }
-
-    for (const update of parser.finish()) {
-      await this.broadcast(update);
+    } finally {
+      await this.broadcast(pendingUpdate(clientId, false));
     }
 
     if (response) {
@@ -3891,6 +3897,31 @@ function injectServerReplacements(
     .replaceAll(CLIENT_SECRET_TOKEN, escapeAttribute(clientSecret))
     .replaceAll(CHAT_ID_TOKEN, escapeAttribute(chatId))
     .replaceAll(FORK_ID_TOKEN, escapeAttribute(forkId));
+}
+
+// Instant "thinking" indicator shown to the submitter the moment their prompt
+// arrives, cleared when the reply lands. Fills the /chat/pending region in
+// app.html; empty payload clears it. Self-contained styles so it needs no
+// app.css change.
+function pendingUpdate(clientId: string, show: boolean): Update {
+  const inner = show
+    ? `<div class="pu-thinking" role="status" aria-label="Thinking">
+	<span class="pu-dot"></span><span class="pu-dot"></span><span class="pu-dot"></span>
+	<style>
+		.pu-thinking{display:flex;gap:6px;align-items:center;padding:10px 14px;color:var(--agent-color,#8aa8c8);}
+		.pu-thinking .pu-dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.35;animation:pu-blink 1.2s infinite ease-in-out;}
+		.pu-thinking .pu-dot:nth-child(2){animation-delay:.2s;}
+		.pu-thinking .pu-dot:nth-child(3){animation-delay:.4s;}
+		@keyframes pu-blink{0%,80%,100%{opacity:.25;transform:scale(.8);}40%{opacity:1;transform:scale(1);}}
+	</style>
+</div>`
+    : "";
+  return {
+    clients: { mode: "include", ids: [clientId] },
+    type: "html",
+    path: "/body",
+    payload: `<template for="/chat/pending"><?start name="/chat/pending">${inner}<?end></template>`,
+  };
 }
 
 function fallbackUpdate(prompt: string, fallbackClientId: string): string {

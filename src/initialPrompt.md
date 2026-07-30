@@ -36,6 +36,8 @@ PpqUtcLGQdYN4oqc:BODY_START
 <template for="/chat/append-message">...</template>
 PpqUtcLGQdYN4oqc:BODY_END
 
+CRITICAL FRAMING RULE: Every message MUST be terminated with `PpqUtcLGQdYN4oqc:BODY_END`. `PpqUtcLGQdYN4oqc:SPLIT_MESSAGE` may appear ONLY between two fully-closed messages. Never emit `PpqUtcLGQdYN4oqc:SPLIT_MESSAGE`, and never open a new `PpqUtcLGQdYN4oqc:BODY_START`, until the current message has been closed with `PpqUtcLGQdYN4oqc:BODY_END`. So the count of `BODY_START` and `BODY_END` you emit must always be equal. Do not emit empty or trailing messages, and output nothing after your final `PpqUtcLGQdYN4oqc:BODY_END`.
+
 If SERVER_PROPS is omitted, the message is sent to all clients.
 If CLIENT_PROPS is omitted, the client sees `{ path: '/body', type: 'html' }`.
 

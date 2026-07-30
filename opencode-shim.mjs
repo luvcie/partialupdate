@@ -21,7 +21,13 @@ import crypto from "node:crypto";
 
 const PORT = Number(process.env.PORT || 8790);
 const OPENCODE_URL = (process.env.OPENCODE_URL || "http://127.0.0.1:4096").replace(/\/$/, "");
-const MODEL = process.env.OPENCODE_MODEL || "";
+const MODEL_STR = process.env.OPENCODE_MODEL || "";
+const MODEL = MODEL_STR ? (() => {
+  const parts = MODEL_STR.split("/");
+  if (parts.length === 2) return { providerID: parts[0], modelID: parts[1] };
+  return { providerID: MODEL_STR, modelID: MODEL_STR };
+})() : null;
+const MODEL_NAME = MODEL_STR || "opencode";
 
 // --- request translation (shared shape with claude-openai-shim) -----------
 
@@ -101,8 +107,8 @@ async function runOpencode({ system, prompt }) {
 
   // 2. send the message and wait for the full reply
   const body = {
-    parts: [{ type: "text", content: prompt }],
-    tools: [], // pure generation, no tool calls (like claude's --tools "")
+    parts: [{ type: "text", text: prompt }],
+    tools: {}, // pure generation, no tool calls
     ...(system ? { system } : {}),
     ...(MODEL ? { model: MODEL } : {}),
   };
@@ -127,7 +133,7 @@ function sseChunk(id, delta, finish = null) {
     id,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
-    model: MODEL || "opencode",
+    model: MODEL_NAME,
     choices: [{ index: 0, delta, finish_reason: finish }],
   })}\n\n`;
 }
@@ -233,6 +239,6 @@ curl -s -XPOST ${OPENCODE_URL}/session/$SID/message -H 'content-type: applicatio
   -d '{"system":"reply in one word","parts":[{"type":"text","content":"hi"}]}' | node -e 'process.stdin.on("data",d=>console.log(JSON.stringify(JSON.parse(d),null,2)))'`);
 } else {
   server.listen(PORT, () => {
-    console.log(`opencode-shim on http://localhost:${PORT} -> ${OPENCODE_URL} (model: ${MODEL || "opencode default"})`);
+    console.log(`opencode-shim on http://localhost:${PORT} -> ${OPENCODE_URL} (model: ${MODEL_NAME || "opencode default"})`);
   });
 }

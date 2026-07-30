@@ -93,7 +93,40 @@ Two attacks a malicious prompter could make that will cost you:
 
 Mitigate 1 by only using with a AI API keys with limited funds e.g. $20 don't use with an expensive frontier model connected straight to your bank account. Mitigate 2 by running in local dev where there is no cost for worker requests. Normal usage for a single user should be dirt cheap to run.
 
+### Run on your Claude Code subscription (no API keys)
+
+This fork can run the app entirely against your local [Claude Code](https://claude.com/claude-code)
+subscription instead of the Cloudflare AI Gateway — no Anthropic API token, no
+Cloudflare account, no Gemini key. Everything stays on `localhost` via
+`wrangler dev`.
+
+How it works: `claude-openai-shim.mjs` is a tiny OpenAI-compatible
+`/chat/completions` server that spawns the `claude` CLI behind it (billed to
+your subscription because no `ANTHROPIC_API_KEY` is set) and streams its output
+back in the SSE shape the app already parses. A `claude-code` model provider in
+`src/index.ts` points at it.
+
+```bash
+npm install
+npm run db:migrate:local          # set up the local D1 database
+cp .dev.vars.example .dev.vars    # activates MODEL_PROVIDER=claude-code
+./run.sh                          # boots the shim + `wrangler dev` together
+# open http://localhost:8787
+```
+
+Notes:
+- Requires the `claude` CLI installed and logged in (`claude` → `/login`).
+- `CLAUDE_MODEL=opus ./run.sh` to pick a model (default `sonnet`).
+- Local only: deployed to the Cloudflare edge the Worker can't reach your
+  localhost shim. Keep it to a single local user — the same malicious-loop
+  caveats above apply, and it runs against your subscription's rate limits.
+- The top-level `send_email` and `ai` bindings are commented out in
+  `wrangler.jsonc` so `wrangler dev` runs fully local without a Cloudflare login
+  (the deployed `alpha`/`production` envs keep their own bindings).
+
 ### Cloudflare
+
+The original hosted path, if you'd rather use the Cloudflare AI Gateway.
 
 Requirements:
 

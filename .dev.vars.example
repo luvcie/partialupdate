@@ -1,0 +1,7 @@
+# Copy to .dev.vars to run the app on your local Claude Code subscription
+# (no API keys, no Cloudflare AI Gateway). Start the shim first — `./run.sh`
+# launches it for you, or run `node claude-openai-shim.mjs` separately.
+MODEL_PROVIDER=claude-code
+CLAUDE_SHIM_URL=http://localhost:8790/v1/chat/completions
+
+# AUTH_PROVIDERS unset -> no login required for local dev.

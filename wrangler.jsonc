@@ -29,12 +29,15 @@
     //   "reasoning_effort": "high",
     // },
   },
-  "send_email": [
-    {
-      "name": "EMAIL",
-      "remote": true,
-    },
-  ],
+  // Disabled for local dev: Send Email is remote-only and forces `wrangler dev`
+  // into remote mode (needs a Cloudflare login). Only used by the auth email
+  // flow, which is off locally (AUTH_PROVIDERS unset).
+  // "send_email": [
+  //   {
+  //     "name": "EMAIL",
+  //     "remote": true,
+  //   },
+  // ],
   "rules": [
     {
       "type": "Text",
@@ -63,9 +66,11 @@
       "database_id": "local-partialupdate-auth",
     },
   ],
-  "ai": {
-    "binding": "AI",
-  },
+  // Disabled for local dev: Workers AI binding is remote-only (forces login).
+  // The LLM call is served by the local Claude Code shim instead.
+  // "ai": {
+  //   "binding": "AI",
+  // },
   "observability": {
     "enabled": true,
   },

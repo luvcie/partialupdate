@@ -3062,6 +3062,11 @@ async function* streamModelResponse(
   const provider = env.MODEL_PROVIDER || "cloudflare-gateway";
   const fallbackPrompt = lastUserMessage(messages);
 
+  if (provider === "claude-code") {
+    yield* streamClaudeShimResponse(env, messages);
+    return;
+  }
+
   if (provider === "gemini-direct" && env.GEMINI_API_KEY) {
     yield* streamGeminiResponse(env, messages);
     return;
@@ -3088,6 +3093,38 @@ async function* streamModelResponse(
   }
 
   yield fallbackUpdate(fallbackPrompt, clientId);
+}
+
+// Local Claude Code subscription, via the OpenAI-compatible shim
+// (claude-openai-shim.mjs). Set MODEL_PROVIDER=claude-code in .dev.vars.
+async function* streamClaudeShimResponse(
+  env: AppEnv,
+  messages: LlmMessage[],
+): AsyncIterable<string> {
+  const url =
+    (env as { CLAUDE_SHIM_URL?: string }).CLAUDE_SHIM_URL ||
+    "http://localhost:8787/v1/chat/completions";
+  const response = await fetch(url, {
+    body: JSON.stringify({
+      messages: gatewayChatMessagesFromMessages(messages),
+      model: "claude-code",
+      stream: true,
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+
+  if (!response.ok || !response.body) {
+    console.warn("Claude shim did not return a stream", {
+      status: response.status,
+      statusText: response.statusText,
+      body: await response.text().catch(() => ""),
+    });
+    yield fallbackUpdate(lastUserMessage(messages), "");
+    return;
+  }
+
+  yield* parseSseTextStream(response.body);
 }
 
 async function* streamCloudflareGatewayResponse(

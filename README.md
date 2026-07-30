@@ -124,6 +124,27 @@ Notes:
   `wrangler.jsonc` so `wrangler dev` runs fully local without a Cloudflare login
   (the deployed `alpha`/`production` envs keep their own bindings).
 
+### Run on opencode (Zen credits, Copilot, etc.)
+
+Same idea as above, but the backend is a local [opencode](https://opencode.ai)
+instead of the `claude` CLI, so it runs on whatever opencode is logged into.
+`opencode-shim.mjs` is an OpenAI `/chat/completions` server that drives
+`opencode serve`.
+
+```bash
+opencode serve                  # terminal 1: :4096, logged into your plan
+node opencode-shim.mjs          # terminal 2: :8790
+cp .dev.vars.example .dev.vars  # MODEL_PROVIDER=claude-code, shim on :8790
+npm run db:migrate:local
+npm run dev                     # terminal 3
+# open http://localhost:8787
+```
+
+- Pick a model with `OPENCODE_MODEL=provider/model` (omit to use opencode's
+  default). Gemini 3 Flash handles this app's partial-update protocol best.
+- Run `node opencode-shim.mjs --doc` first: it prints curl probes to confirm
+  the opencode API shapes on your machine. A field-name mismatch is a one-line fix.
+
 ### Cloudflare
 
 The original hosted path, if you'd rather use the Cloudflare AI Gateway.
